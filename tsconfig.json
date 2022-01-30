@@ -1,0 +1,21 @@
+{
+    "compilerOptions": {
+      "declaration": true,
+      "inlineSourceMap": false,
+      "module": "CommonJS",
+      "moduleResolution": "node",
+      "sourceMap": true,
+      "experimentalDecorators": true,
+      "emitDecoratorMetadata": true,
+      "target": "ES2016",
+      "typeRoots" : ["types", "node_modules/@types"],
+      "outDir": "dist",
+    },
+    "include": [
+      "src/**/*.ts"
+    ],
+    "exclude": [
+      "node_modules"
+    ]
+  }
+  
