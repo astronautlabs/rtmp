@@ -10,7 +10,7 @@
   "license": "MIT",
   "dependencies": {
     "@astronautlabs/amf": "^0.0.1",
-    "@astronautlabs/bitstream": "^2.1.2",
+    "@astronautlabs/bitstream": "^3.0.3",
     "@types/node": "^17.0.10",
     "rxjs": "^7.5.2"
   }
