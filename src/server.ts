@@ -1,8 +1,258 @@
-import { ChunkStreams, ChunkStreamSession, CommandAMF0Data, CommandAMF3Data, ConnectCommandObject, Message, 
-    MessageStreams, ProtocolMessageType, StreamBeginEventData, StreamDryEventData, StreamEndEventData, 
-    UserControlData, UserControlMessageType } from "./chunk-stream";
+import { ChunkStreamSession, CONTROL_MESSAGE_STREAM_ID, Message, MessageData, ProtocolMessageType, PROTOCOL_CHUNK_STREAM_ID } from "./chunk-stream";
 import * as net from 'net';
 import { Subject } from "rxjs";
+import { DefaultVariant, Field, Variant, VariantMarker } from "@astronautlabs/bitstream";
+import { AMF3, AMF0 } from '@astronautlabs/amf';
+
+export enum UserControlMessageType {
+    StreamBegin = 0,
+    StreamEOF = 1,
+    StreamDry = 2,
+    SetBufferLength = 3,
+    StreamIsRecorded = 4,
+    PingRequest = 6,
+    PingResponse = 7
+}
+
+/**
+ * Defines the chunk streams that various kinds of messages are sent on.
+ * Note that this is completely arbitrary (except for chunk stream 2).
+ * Other implementations differ on which chunk stream IDs are used, implementations
+ * should not depend on this.
+ */
+ export enum ChunkStreams {
+    /**
+     * Used for Command messages (RTMP§7.2)
+     */
+    Invoke = 3,
+
+    /**
+     * Used for audio data
+     */
+    Audio = 4,
+
+    /**
+     * Used for video data
+     */
+    Video = 5,
+
+    /**
+     * Dedicated chunk stream for AV control operations (play/pause/publish/etc)
+     * Stole the idea from ffmpeg
+     */
+    AvInvoke = 6
+}
+
+export const CommandParameterCount = {
+    _result: 1,
+    _error: 1, // Info / Streamid are optional
+    onStatus: 1,
+    releaseStream: 1,
+    getStreamLength: 1,
+    getMovLen: 1,
+    FCPublish: 1,
+    FCUnpublish: 1,
+    FCSubscribe: 1,
+    onFCPublish: 1,
+    connect: 1,
+    call: 1,
+    createStream: 0,
+    close: 0,
+    play: 4,
+    play2: 1,
+    deleteStream: 1,
+    closeStream: 0,
+    receiveAudio: 1,
+    receiveVideo: 1,
+    publish: 2,
+    seek: 1,
+    pause: 2
+  };
+
+@Variant<MessageData>(i => i.typeId === ProtocolMessageType.CommandAMF0)
+export class CommandAMF0Data<T extends object = {}> extends MessageData {
+    @Field() private $commandName : AMF0.Value;
+    @Field() private $transactionId : AMF0.Value;
+    @Field() private $commandObject : AMF0.Value;
+    
+    @Field((i : CommandAMF0Data) => CommandParameterCount[i.commandName] ?? 0) private $parameters : AMF0.Value[];
+
+    get commandName() {
+        return this.$commandName?.value as string;
+    }
+
+    set commandName(value) {
+        this.$commandName = AMF0.Value.string(value);
+    }
+
+    get transactionId() {
+        return this.$transactionId?.value as number;
+    }
+
+    set transactionId(value) {
+        this.$transactionId = AMF0.Value.number(value);
+    }
+
+    get commandObject(): T {
+        return this.$commandObject?.value as T;
+    }
+
+    set commandObject(value : T) {
+        this.$commandObject = AMF0.Value.object(value);
+    }
+
+    get parameters() {
+        return this.$parameters.map(x => x.value);
+    }
+}
+
+@Variant<MessageData>(i => i.typeId === ProtocolMessageType.CommandAMF3)
+export class CommandAMF3Data<T extends object = {}> extends MessageData {
+    @Field() private $commandName : AMF3.Value;
+    @Field() private $transactionId : AMF3.Value;
+    @Field() private $commandObject : AMF3.Value;
+    
+    @Field((i : CommandAMF3Data) => CommandParameterCount[i.commandName] ?? 0) private $parameters : AMF3.Value[];
+
+    get commandName() {
+        return this.$commandName?.value as string;
+    }
+
+    set commandName(value) {
+        this.$commandName = AMF3.Value.string(value);
+    }
+
+    get transactionId() {
+        return this.$transactionId?.value as number;
+    }
+
+    set transactionId(value) {
+        this.$transactionId = AMF3.Value.double(value);
+    }
+
+    get commandObject(): T {
+        return this.$commandObject?.value as T;
+    }
+
+    set commandObject(value : T) {
+        this.$commandObject = AMF3.Value.object(value);
+    }
+
+    get parameters() {
+        return this.$parameters.map(x => x.value);
+    }
+}
+
+export enum AudioCodecFlags {
+    SUPPORT_SND_NONE = 0x0001,
+    SUPPORT_SND_ADPCM = 0x0002,
+    SUPPORT_SND_MP3 = 0x0004,
+    SUPPORT_SND_INTEL = 0x0008,
+    SUPPORT_SND_UNUSED = 0x0010,
+    SUPPORT_SND_NELLY8 = 0x0020,
+    SUPPORT_SND_G711A = 0x0080,
+    SUPPORT_SND_G711U = 0x0100,
+    SUPPORT_SND_NELLY16 = 0x0200,
+    SUPPORT_SND_AAC = 0x0400,
+    SUPPORT_SND_SPEEX = 0x0800,
+    SUPPORT_SND_ALL = 0x0FFF
+}
+
+export enum VideoCodecFlags {
+    SUPPORT_VID_UNUSED = 0x0001,
+    SUPPORT_VID_JPEG = 0x0002,
+    SUPPORT_VID_SORENSON = 0x0004,
+    SUPPORT_VID_HOMEBREW = 0x0008,
+    SUPPORT_VID_VP6 = 0x0010,
+    SUPPORT_VID_VP6ALPHA = 0x0020,
+    SUPPORT_VID_HOMEBREWV = 0x0040,
+    SUPPORT_VID_H264 = 0x0080,
+    SUPPORT_VID_ALL = 0x00FF
+}
+
+export enum VideoFunctionFlags {
+    SUPPORT_VID_CLIENT_SEEK = 1
+}
+
+export enum ObjectEncoding {
+    AMF0 = 0,
+    AMF3 = 3
+}
+
+
+
+export interface ConnectCommandObject {
+    app : string;
+    flashver : string;
+    swfUrl : string;
+    tcUrl : string;
+    fpad : boolean;
+    audioCodecs : number;
+    videoCodecs : number;
+    videoFunction : number;
+    pageUrl : string;
+    objectEncoding : number;
+}
+
+@DefaultVariant()
+export class RTMPMessageData extends MessageData {
+    @Field(8*1) messageType : number;
+    @Field(8*3) length : number;
+    @Field(8*4) timestamp : number;
+    @Field(8*3) messageStreamId : number;
+    
+    @VariantMarker()
+    $marker;
+}
+
+@DefaultVariant()
+export class UnknownRTMPMessageData extends RTMPMessageData {
+    @Field((i : RTMPMessageData) => i.length)
+    data : Buffer;
+}
+
+@Variant<MessageData>(i => i.typeId === ProtocolMessageType.UserControl)
+export class UserControlData extends MessageData {
+    @Field(8*2) eventType : number;
+}
+
+
+
+@Variant<UserControlData>(i => i.eventType === UserControlMessageType.StreamBegin)
+export class StreamBeginEventData extends UserControlData {
+    @Field(4) streamID : number;
+}
+
+@Variant<UserControlData>(i => i.eventType === UserControlMessageType.StreamEOF)
+export class StreamEndEventData extends UserControlData {
+    @Field(4) streamID : number;
+}
+
+@Variant<UserControlData>(i => i.eventType === UserControlMessageType.StreamDry)
+export class StreamDryEventData extends UserControlData {
+    @Field(4) streamID : number;
+}
+
+@Variant<UserControlData>(i => i.eventType === UserControlMessageType.SetBufferLength)
+export class SetBufferLengthEventData extends UserControlData {
+    @Field(4) streamID : number;
+    @Field(4) bufferLength : number;
+}
+
+@Variant<UserControlData>(i => i.eventType === UserControlMessageType.StreamIsRecorded)
+export class StreamIsRecordedEventData extends UserControlData {
+    @Field(4) streamID : number;
+}
+
+@Variant<UserControlData>(i => i.eventType === UserControlMessageType.PingRequest)
+export class PingRequestData extends UserControlData {
+    @Field(4) timestamp: number;
+}
+
+@Variant<UserControlData>(i => i.eventType === UserControlMessageType.PingResponse)
+export class PingResponseData extends UserControlData {
+    @Field(4) timestamp: number;
+}
 
 /**
  * Represents a media stream. Subclass and override the command methods to 
@@ -326,7 +576,7 @@ export class Session {
             this._streams.delete(id);
         })
         this._streams.set(id, stream);
-        this.sendCommand0('_result', [ id ], null);
+        this.sendCommand0('_result', [ id ], { transactionId });
         this.streamCreated.next(stream);
     }
 
@@ -361,8 +611,8 @@ export class Session {
 
     userControl(data : UserControlData) {
         this.chunkSession.send({
-            chunkStreamId: ChunkStreams.ProtocolControl,
-            messageStreamId: MessageStreams.Control,
+            chunkStreamId: PROTOCOL_CHUNK_STREAM_ID,
+            messageStreamId: CONTROL_MESSAGE_STREAM_ID,
             messageTypeId: ProtocolMessageType.UserControl,
             timestamp: 0,
             buffer: Buffer.from(data.serialize())
@@ -387,7 +637,7 @@ export class Session {
 
         this.chunkSession.send({
             chunkStreamId: ChunkStreams.Invoke,
-            messageStreamId: MessageStreams.Control,
+            messageStreamId: CONTROL_MESSAGE_STREAM_ID,
             messageTypeId: ProtocolMessageType.CommandAMF0,
             timestamp: 0,
             buffer: Buffer.from(new CommandAMF0Data().with({ 
@@ -405,7 +655,7 @@ export class Session {
 
         this.chunkSession.send({
             chunkStreamId: ChunkStreams.Invoke,
-            messageStreamId: MessageStreams.Control,
+            messageStreamId: CONTROL_MESSAGE_STREAM_ID,
             messageTypeId: ProtocolMessageType.CommandAMF3,
             timestamp: 0,
             buffer: Buffer.from(new CommandAMF3Data().with({ 
