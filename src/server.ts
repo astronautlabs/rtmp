@@ -1,8 +1,8 @@
-import { AbortMessageData, AcknowledgementData, C1_RANDOM_SIZE, ChunkHeader, ChunkHeader0, ChunkStreamReader, ChunkStreams, ChunkStreamWriter, CommandAMF0Data, CommandAMF3Data, ConnectCommandObject, Handshake0, Handshake1, Handshake2, HandshakeState, Message, MessageStreams, MultiplexedStreamState, ProtocolMessageType, SetChunkSizeData, SetPeerBandwidthData, UserControlData, UserControlMessageType, WindowAcknowledgementSizeData } from "./chunk-stream";
-import * as crypto from 'crypto';
+import { ChunkStreams, ChunkStreamSession, CommandAMF0Data, CommandAMF3Data, ConnectCommandObject, Message, 
+    MessageStreams, ProtocolMessageType, StreamBeginEventData, StreamDryEventData, StreamEndEventData, 
+    UserControlData, UserControlMessageType } from "./chunk-stream";
 import * as net from 'net';
-import { BitstreamReader, BitstreamWriter } from "@astronautlabs/bitstream";
-import { Observable, Subject } from "rxjs";
+import { Subject } from "rxjs";
 
 /**
  * Represents a media stream. Subclass and override the command methods to 
@@ -16,15 +16,15 @@ export class ServerStream {
     messageReceived = new Subject<Message>();
 
     notifyBegin() {
-        this.session.chunkWriter.streamBegin(this.id);
+        this.session.streamBegin(this.id);
     }
 
     notifyDry() {
-        this.session.chunkWriter.streamDry(this.id);
+        this.session.streamDry(this.id);
     }
 
     notifyEnd() {
-        this.session.chunkWriter.streamEnd(this.id);
+        this.session.streamEnd(this.id);
     }
 
     dispose() {
@@ -53,7 +53,7 @@ export class ServerControlStream extends ServerStream {
 
 export class ServerMediaStream extends ServerStream {
     pause(paused : boolean, milliseconds : number) {
-        this.session.chunkWriter.sendCommand0('onStatus', [{
+        this.session.sendCommand0('onStatus', [{
             level: 'error',
             code: 'NetStream.Pause.NotImplemented',
             description: `This operation is not implemented for this stream`
@@ -61,7 +61,7 @@ export class ServerMediaStream extends ServerStream {
     }
 
     seek(milliseconds : number) {
-        this.session.chunkWriter.sendCommand0('onStatus', [{
+        this.session.sendCommand0('onStatus', [{
             level: 'error',
             code: 'NetStream.Seek.NotImplemented',
             description: `This operation is not implemented for this stream`
@@ -69,7 +69,7 @@ export class ServerMediaStream extends ServerStream {
     }
 
     publish(publishName : string, publishType : 'live' | 'record' | 'append') {
-        this.session.chunkWriter.sendCommand0('onStatus', [{
+        this.session.sendCommand0('onStatus', [{
             level: 'error',
             code: 'NetStream.Publish.NotImplemented',
             description: `This operation is not implemented for this stream`
@@ -77,7 +77,7 @@ export class ServerMediaStream extends ServerStream {
     }
 
     play(streamName : string, start : number, duration : number, reset : boolean) {
-        this.session.chunkWriter.sendCommand0('onStatus', [{
+        this.session.sendCommand0('onStatus', [{
             level: 'error',
             code: 'NetStream.Play.NotImplemented',
             description: `This operation is not implemented for this stream`
@@ -85,7 +85,7 @@ export class ServerMediaStream extends ServerStream {
     }
 
     play2(params : any) {
-        this.session.chunkWriter.sendCommand0('onStatus', [{
+        this.session.sendCommand0('onStatus', [{
             level: 'error',
             code: 'NetStream.Play2.NotImplemented',
             description: `This operation is not implemented for this stream`
@@ -101,12 +101,12 @@ export class ServerMediaStream extends ServerStream {
     enableAudio(enabled : boolean) {
         this.isAudioEnabled = enabled;
         if (enabled) {
-            this.session.chunkWriter.sendCommand0('onStatus', [{
+            this.session.sendCommand0('onStatus', [{
                 level: 'status',
                 code: 'NetStream.Seek.Notify',
                 description: `Seeking audio`
             }]);
-            this.session.chunkWriter.sendCommand0('onStatus', [{
+            this.session.sendCommand0('onStatus', [{
                 level: 'status',
                 code: 'NetStream.Play.Start',
                 description: `Playing audio`
@@ -119,12 +119,12 @@ export class ServerMediaStream extends ServerStream {
     enableVideo(enabled : boolean) {
         this.isVideoEnabled = enabled;
         if (enabled) {
-            this.session.chunkWriter.sendCommand0('onStatus', [{
+            this.session.sendCommand0('onStatus', [{
                 level: 'status',
                 code: 'NetStream.Seek.Notify',
                 description: `Seeking video`
             }]);
-            this.session.chunkWriter.sendCommand0('onStatus', [{
+            this.session.sendCommand0('onStatus', [{
                 level: 'status',
                 code: 'NetStream.Play.Start',
                 description: `Playing video`
@@ -137,7 +137,7 @@ export class ServerMediaStream extends ServerStream {
     sendVideo(timestamp : number, buffer : Buffer) {    
         if (!this.isVideoEnabled)
             return;
-        this.session.chunkWriter.send({
+        this.session.chunkSession.send({
             messageTypeId: ProtocolMessageType.Audio,
             messageStreamId: this.id,
             chunkStreamId: ChunkStreams.Audio,
@@ -149,7 +149,7 @@ export class ServerMediaStream extends ServerStream {
     sendAudio(timestamp : number, buffer : Buffer) {
         if (!this.isAudioEnabled)
             return;
-        this.session.chunkWriter.send({
+        this.session.chunkSession.send({
             messageTypeId: ProtocolMessageType.Audio,
             messageStreamId: this.id,
             chunkStreamId: ChunkStreams.Audio,
@@ -202,7 +202,7 @@ export class ServerMediaStream extends ServerStream {
             default:
                 let handled = this.call(commandName, commandObject, parameters[0]);
                 if (!handled) {
-                    this.session.chunkWriter.sendCommand0('_error', [{
+                    this.session.sendCommand0('_error', [{
                         level: 'error',
                         code: 'NetStream.Call.Unhandled',
                         description: `The RPC call '${commandName}' is not handled by this server.`
@@ -222,53 +222,60 @@ export class Session {
         readonly socket : net.Socket,
         readonly server : Server
     ) {
-        this.readState.windowSize = server.preferredWindowSize;
-        this.writeState.windowSize = server.preferredWindowSize;
-        this.writeState.maxChunkSize = server.preferredChunkSize;
-        
+        // Socket
         this.server.connections.push(this);
-        this.reader = new BitstreamReader();
-        this.writer = new BitstreamWriter(socket);
-        this.chunkWriter = new ChunkStreamWriter(this.writer);
-        this.socket.on('data', data => this.reader.addBuffer(data));
         this.socket.on('close', () => this.server.connections = this.server.connections.filter(x => x !== this));
-        this.handle();
+        
+        // Chunk Session
+
+        this.chunkSession = ChunkStreamSession.forSocket(this.socket);
+        this.chunkSession.messageReceived.subscribe(m => this.receiveMessage(m));
     }
+    
+    chunkSession : ChunkStreamSession;
 
-    chunkWriter : ChunkStreamWriter;
-    maxChunkSize = 128;
-    reader : BitstreamReader;
-    writer : BitstreamWriter;
-    handshakeState : HandshakeState;
-    clientVersion : number;
-    chunkStreamMap = new Map<number, ChunkStreamReader>();
-    windowSize : number;
+    private receiveMessage(message : Message) {
+        switch (message.typeId) {
+            case ProtocolMessageType.UserControl: {
+                let eventData = message.data as UserControlData;
+                switch (eventData.eventType) {
+                    case UserControlMessageType.StreamBegin:
+                        break;
+                    case UserControlMessageType.StreamEOF:
+                        break;
+                    case UserControlMessageType.StreamDry:
+                        break;
+                    case UserControlMessageType.SetBufferLength:
+                        break;
+                    case UserControlMessageType.StreamIsRecorded:
+                        break;
+                    case UserControlMessageType.PingRequest:
+                        break;
+                    case UserControlMessageType.PingResponse:
+                        break;
+                    default:
+                        throw new Error(`Unknown user control message type: ${eventData.eventType}`);
+                }
+            }
+            case ProtocolMessageType.CommandAMF0:
+            case ProtocolMessageType.CommandAMF3: {
+                let data = <CommandAMF3Data | CommandAMF0Data> message.data;
+                let receiver = message.messageStreamId === 0 ? this : this.getStream(message.messageStreamId);
 
-    readState : MultiplexedStreamState = {
-        maxChunkSize: this.maxChunkSize,
-        windowSize: 0,
-        limitType: 1,
-        sequenceNumber: 0,
-        hasExtendedTimestamp: false
-    };
+                if (!receiver) {
+                    this.sendCommand0('onStatus', [{
+                        level: 'error',
+                        code: 'NetStream.Stream.Failed',
+                        description: `There is no stream with ID ${message.messageStreamId}. Use createStream first.`
+                    }]);
+                    return;
+                }
 
-    writeState : MultiplexedStreamState = {
-        maxChunkSize: this.maxChunkSize,
-        windowSize: 0,
-        limitType: 1,
-        sequenceNumber: 0,
-        hasExtendedTimestamp: false
-    };
-
-    get chunkStreams() {
-        return Array.from(this.chunkStreamMap.values());
-    }
-
-    private handleMessage(message : Message) {
-        if (message.messageStreamId === 0)
-            this.handleControlMessage(message);
-        else
-            this.handleStreamMessage(message);
+                receiver.receiveCommand(data.commandName, data.transactionId, data.commandObject, data.parameters)
+            }
+            default:
+                this.handleStreamMessage(message);
+        }
     }
 
     private _streams = new Map<number,ServerStream>();
@@ -303,77 +310,8 @@ export class Session {
         }
     }
 
-    private handleControlMessage(message : Message) {
-        switch (message.typeId) {
-            case ProtocolMessageType.SetChunkSize: {
-                this.maxChunkSize = Math.min(Math.max(1, (message.data as SetChunkSizeData).chunkSize), 16777215);
-                this.chunkStreams.forEach(s => s.maxChunkSize = this.maxChunkSize);
-            } break;
-            case ProtocolMessageType.AbortMessage: {
-                this.getChunkStream((message.data as AbortMessageData).chunkStreamId).abortMessage();
-            } break;
-            case ProtocolMessageType.Acknowledgement: {
-                this.readState.sequenceNumber = (message.data as AcknowledgementData).sequenceNumber;
-            } break;
-            case ProtocolMessageType.UserControl: {
-                let eventData = message.data as UserControlData;
-                switch (eventData.eventType) {
-                    case UserControlMessageType.StreamBegin:
-                        break;
-                    case UserControlMessageType.StreamEOF:
-                        break;
-                    case UserControlMessageType.StreamDry:
-                        break;
-                    case UserControlMessageType.SetBufferLength:
-                        break;
-                    case UserControlMessageType.StreamIsRecorded:
-                        break;
-                    case UserControlMessageType.PingRequest:
-                        break;
-                    case UserControlMessageType.PingResponse:
-                        break;
-                    default:
-                        throw new Error(`Unknown user control message type: ${eventData.eventType}`);
-                }
-            }
-            case ProtocolMessageType.WindowAcknowledgementSize: {
-                this.readState.windowSize = (message.data as WindowAcknowledgementSizeData).acknowledgementWindowSize;
-            } break;
-            case ProtocolMessageType.SetPeerBandwidth: {
-                let data = message.data as SetPeerBandwidthData;
-
-                if (data.limitType === 0)
-                    this.writeState.windowSize = data.acknowledgementWindowSize;
-                else if (data.limitType === 1)
-                    this.writeState.windowSize = Math.min(this.writeState.windowSize, data.acknowledgementWindowSize);
-                else if (data.limitType === 2 && this.writeState.limitType === 0) {
-                    this.writeState.windowSize = data.acknowledgementWindowSize;
-                    data.limitType = 0;
-                }
-                
-                this.writeState.limitType = data.limitType;
-            } break;
-            case ProtocolMessageType.CommandAMF0:
-            case ProtocolMessageType.CommandAMF3: {
-                let data = <CommandAMF3Data | CommandAMF0Data> message.data as CommandAMF3Data;
-                let receiver = message.messageStreamId === 0 ? this : this.getStream(message.messageStreamId);
-
-                if (!receiver) {
-                    this.chunkWriter.sendCommand0('onStatus', [{
-                        level: 'error',
-                        code: 'NetStream.Stream.Failed',
-                        description: `There is no stream with ID ${message.messageStreamId}. Use createStream first.`
-                    }]);
-                    return;
-                }
-
-                receiver.receiveCommand(data.commandName, data.transactionId, data.commandObject, data.parameters)
-            }
-        }
-    }
-
     private nextStreamID = 1;
-
+ 
     streamCreated = new Subject<ServerStream>();
 
     protected createStream(id : number) {
@@ -388,20 +326,20 @@ export class Session {
             this._streams.delete(id);
         })
         this._streams.set(id, stream);
-        this.chunkWriter.sendCommand0('_result', [ id ], null);
+        this.sendCommand0('_result', [ id ], null);
         this.streamCreated.next(stream);
     }
 
     private onConnect(command : ConnectCommandObject, args : Record<string, any>) {
-        this.chunkWriter.setAcknowledgementWindow(this.writeState.windowSize);
-        this.chunkWriter.setPeerBandwidth(this.readState.windowSize, 'dynamic');
-        this.chunkWriter.setChunkSize(this.writeState.maxChunkSize);
+        this.chunkSession.setAcknowledgementWindow(this.server.preferredWindowSize);
+        this.chunkSession.setPeerBandwidth(this.server.preferredWindowSize, 'dynamic');
+        this.chunkSession.setChunkSize(this.server.preferredChunkSize);
 
         let controlStream = new ServerControlStream(this);
         controlStream.notifyBegin();
         this._streams.set(0, controlStream);
 
-        this.chunkWriter.sendCommand0('_result', [{ 
+        this.sendCommand0('_result', [{ 
             code: 'NetConnection.Connect.Success',
             description: 'Connection succeeded',
             data: {
@@ -419,65 +357,64 @@ export class Session {
         });
     }
 
-    private async handle() {
-        await this.handshake();
-
-        this.messageReceived.subscribe(message => this.handleMessage(message));
-
-        let chunkStreamId : number = undefined;
-
-        while (true) {
-            let chunkHeader = await ChunkHeader.readBlocking(this.reader, { params: [ this.readState ] });
-
-            if (chunkHeader.chunkStreamId !== undefined)
-                chunkStreamId = chunkHeader.chunkStreamId;
-            
-            let chunkStream = this.getChunkStream(chunkStreamId);
-            await chunkStream.receiveChunk(chunkHeader, this.reader);
-
-            if (this.reader.offset >= this.readState.sequenceNumber + this.readState.windowSize) {
-                this.readState.sequenceNumber += this.readState.windowSize;
-                this.chunkWriter.acknowledge(this.readState.sequenceNumber);
-            }
-        }
-    }
-
     messageReceived = new Subject<Message>();
 
-    getChunkStream(chunkStreamId : number) {
-        if (!this.chunkStreamMap.has(chunkStreamId)) {
-            let reader = new ChunkStreamReader(chunkStreamId, this.maxChunkSize);
-            reader.messageReceived.subscribe(m => this.messageReceived.next(m));
-            this.chunkStreamMap.set(chunkStreamId, reader);
-        }
-
-        return this.chunkStreamMap.get(chunkStreamId);
+    userControl(data : UserControlData) {
+        this.chunkSession.send({
+            chunkStreamId: ChunkStreams.ProtocolControl,
+            messageStreamId: MessageStreams.Control,
+            messageTypeId: ProtocolMessageType.UserControl,
+            timestamp: 0,
+            buffer: Buffer.from(data.serialize())
+        });
     }
 
-    private async handshake() {
-        this.clientVersion = (await Handshake0.readBlocking(this.reader)).version;
-        new Handshake0()
-            .with({ version: this.server.version })
-            .write(this.writer);
+    streamBegin(streamID : number) {
+        this.userControl(new StreamBeginEventData().with({ streamID }));
+    }
 
-        let c1 = await Handshake1.readBlocking(this.reader);
-        new Handshake1()
-            .with({
-                time: Math.floor(Date.now() / 1000),
-                random: crypto.randomBytes(C1_RANDOM_SIZE)
-            })
-            .write(this.writer)
-        ;
+    streamEnd(streamID : number) {
+        this.userControl(new StreamEndEventData().with({ streamID }));
+    }
 
-        let c2 = await Handshake2.readBlocking(this.reader);
-        new Handshake2()
-            .with({
-                time: c1.time,
-                time2: Math.floor(Date.now() / 1000),
-                randomEcho: c1.random
-            })
-            .write(this.writer);
-        ;
+    streamDry(streamID : number) {
+        this.userControl(new StreamDryEventData().with({ streamID }));
+    }
+
+    sendCommand0(commandName : string, parameters : any[], options : { transactionId? : number, commandObject? : any } = {}) {
+        let transactionId = options.transactionId ?? 0;
+        let commandObject = options.commandObject ?? null;
+
+        this.chunkSession.send({
+            chunkStreamId: ChunkStreams.Invoke,
+            messageStreamId: MessageStreams.Control,
+            messageTypeId: ProtocolMessageType.CommandAMF0,
+            timestamp: 0,
+            buffer: Buffer.from(new CommandAMF0Data().with({ 
+                commandName,
+                transactionId,
+                commandObject,
+                parameters
+            }).serialize())
+        });
+    }
+
+    sendCommand3(commandName : string, parameters : any[], options : { transactionId? : number, commandObject? : any } = {}) {
+        let transactionId = options.transactionId ?? 0;
+        let commandObject = options.commandObject ?? null;
+
+        this.chunkSession.send({
+            chunkStreamId: ChunkStreams.Invoke,
+            messageStreamId: MessageStreams.Control,
+            messageTypeId: ProtocolMessageType.CommandAMF3,
+            timestamp: 0,
+            buffer: Buffer.from(new CommandAMF3Data().with({ 
+                commandName,
+                transactionId,
+                commandObject,
+                parameters
+            }).serialize())
+        });
     }
 }
 

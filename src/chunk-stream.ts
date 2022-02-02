@@ -1,9 +1,10 @@
-import { BitstreamElement, BitstreamReader, BitstreamWriter, DefaultVariant, Field, Variant, VariantMarker } from "@astronautlabs/bitstream";
+import { BitstreamElement, BitstreamReader, BitstreamWriter, DefaultVariant, Field, Variant, 
+    VariantMarker } from "@astronautlabs/bitstream";
 import * as net from 'net';
 import * as crypto from 'crypto';
 import { Observable, Subject } from "rxjs";
 import { AMF0, AMF3 } from '@astronautlabs/amf';
-import { EventEmitter } from "stream";
+import { Bitstream } from "./bitstream";
 
 export class Message extends BitstreamElement {
     readonly typeId : number;
@@ -20,6 +21,7 @@ export interface ChunkStreamState {
     messageLength? : number;
     messageTypeId? : number;
     messageStreamId? : number;
+    messagePayload? : Buffer;
 }
 
 export abstract class ChunkStreamId extends BitstreamElement {
@@ -77,7 +79,7 @@ export class StreamUnknownChunk extends StreamChunk {
 }
 
 export class ChunkHeader extends BitstreamElement {
-    constructor(readonly streamState? : MultiplexedStreamState) {
+    constructor(readonly expectsExtendedTimestamp? : boolean) {
         super();
     }
 
@@ -110,7 +112,7 @@ export class ChunkHeader extends BitstreamElement {
 
     @VariantMarker() $variant;
 
-    @Field(8*4, { presentWhen: (i : ChunkHeader) => typeof i.basicTimestamp !== 'undefined' ? i.hasExtendedTimestamp : i.streamState.hasExtendedTimestamp })
+    @Field(8*4, { presentWhen: (i : ChunkHeader) => typeof i.basicTimestamp !== 'undefined' ? i.hasExtendedTimestamp : i.expectsExtendedTimestamp })
     extendedTimestamp : number;
 
     get hasExtendedTimestamp() {
@@ -528,10 +530,12 @@ export interface Result {
 }
 
 export class ChunkStreamWriter {
-    constructor (readonly writer : BitstreamWriter) {
+    constructor (private bitstream : Bitstream) {
     }
 
     maxChunkSize = 128;
+    windowSize = 0;
+    limitType = 1;
     messageStreamId : number;
     timestamp : number;
     messageLength : number;
@@ -578,8 +582,8 @@ export class ChunkStreamWriter {
                 messageStreamId: message.messageStreamId,
                 messageTypeId: message.messageTypeId,
                 messageLength: message.buffer.length
-            }).write(this.writer);
-            this.writer.writeBuffer(message.buffer);
+            }).write(this.bitstream.writer);
+            this.bitstream.writer.writeBuffer(message.buffer);
             return;
         }
     }
@@ -660,46 +664,6 @@ export class ChunkStreamWriter {
         });
     }
 
-    userControl(data : UserControlData) {
-        this.send({
-            chunkStreamId: ChunkStreams.ProtocolControl,
-            messageStreamId: MessageStreams.Control,
-            messageTypeId: ProtocolMessageType.UserControl,
-            timestamp: 0,
-            buffer: Buffer.from(data.serialize())
-        });
-    }
-
-    streamBegin(streamID : number) {
-        this.userControl(new StreamBeginEventData().with({ streamID }));
-    }
-
-    streamEnd(streamID : number) {
-        this.userControl(new StreamEndEventData().with({ streamID }));
-    }
-
-    streamDry(streamID : number) {
-        this.userControl(new StreamDryEventData().with({ streamID }));
-    }
-
-    sendCommand0(commandName : string, parameters : any[], options : { transactionId? : number, commandObject? : any } = {}) {
-        let transactionId = options.transactionId ?? 0;
-        let commandObject = options.commandObject ?? null;
-
-        this.send({
-            chunkStreamId: ChunkStreams.Invoke,
-            messageStreamId: MessageStreams.Control,
-            messageTypeId: ProtocolMessageType.CommandAMF0,
-            timestamp: 0,
-            buffer: Buffer.from(new CommandAMF0Data().with({ 
-                commandName,
-                transactionId,
-                commandObject,
-                parameters
-            }).serialize())
-        });
-    }
-
     private write() {
         let remainingMessages = 0;
 
@@ -721,14 +685,14 @@ export class ChunkStreamWriter {
                     if (state.timestampDelta === timestampDelta) {
                         // Type 3
                         new ChunkHeader3()
-                            .write(this.writer);
+                            .write(this.bitstream.writer);
                     } else {
                         // Type 2
                         new ChunkHeader2()
                             .with({
                                 timestamp: timestampDelta
                             })
-                            .write(this.writer);
+                            .write(this.bitstream.writer);
                     }
                 } else {
                     // Type 1
@@ -738,7 +702,7 @@ export class ChunkStreamWriter {
                             messageLength: message.buffer.length,
                             messageTypeId: message.messageTypeId
                         })
-                        .write(this.writer);
+                        .write(this.bitstream.writer);
                 }
 
                 state.timestampDelta = timestampDelta;
@@ -752,7 +716,7 @@ export class ChunkStreamWriter {
                         messageTypeId: message.messageTypeId,
                         messageStreamId: message.messageStreamId
                     })
-                    .write(this.writer);
+                    .write(this.bitstream.writer);
 
                 // The semantics of timestamp delta after receiving Type 0 is unclear:
                 // - Does the receiver compute the delta implicitly when receiving two consecutive Type-0's
@@ -764,7 +728,7 @@ export class ChunkStreamWriter {
             }
             
             let writeSize = Math.min(this.maxChunkSize, message.buffer.length - message.bytesSent);
-            this.writer.writeBuffer(message.buffer.slice(message.bytesSent, message.bytesSent + writeSize));
+            this.bitstream.writer.writeBuffer(message.buffer.slice(message.bytesSent, message.bytesSent + writeSize));
             message.bytesSent += writeSize;
 
             state.messageStreamId = message.messageStreamId;
@@ -792,6 +756,65 @@ export class ChunkStreamWriter {
     private writeTimeout;
 }
 
+export class ChunkStreamSession {
+    constructor(readonly bitstream : Bitstream) {
+        this.reader = new ChunkStreamReader(this.bitstream);
+        this.writer = new ChunkStreamWriter(this.bitstream);
+
+        this.reader.acknowledgements.subscribe(sequenceNumber => this.writer.acknowledge(sequenceNumber));
+        this.reader.messageReceived.subscribe(message => this.receiveMessage(message));
+    }
+
+    readonly reader : ChunkStreamReader;
+    readonly writer : ChunkStreamWriter;
+
+    #messageReceived = new Subject<Message>();
+    get messageReceived() { return this.#messageReceived; }
+
+    private receiveMessage(message : Message) {
+        switch (message.typeId) {
+            case ProtocolMessageType.SetPeerBandwidth: {
+                let data = message.data as SetPeerBandwidthData;
+
+                if (data.limitType === 0)
+                    this.writer.windowSize = data.acknowledgementWindowSize;
+                else if (data.limitType === 1)
+                    this.writer.windowSize = Math.min(this.writer.windowSize, data.acknowledgementWindowSize);
+                else if (data.limitType === 2 && this.writer.limitType === 0) {
+                    this.writer.windowSize = data.acknowledgementWindowSize;
+                    data.limitType = 0;
+                }
+                
+                this.writer.limitType = data.limitType;
+            } break;
+            default:
+                this.#messageReceived.next(message);
+        }
+    }
+
+    send(message : ChunkMessage) {
+        this.writer.send(message);
+    }
+
+    setAcknowledgementWindow(acknowledgementWindowSize : number) {
+        this.writer.setAcknowledgementWindow(acknowledgementWindowSize)
+    }
+
+    setPeerBandwidth(acknowledgementWindowSize : number, limitType : 'soft' | 'hard' | 'dynamic') {
+        this.writer.setPeerBandwidth(acknowledgementWindowSize, limitType);
+    }
+
+    setChunkSize(chunkSize : number) {
+        this.writer.setChunkSize(chunkSize);
+    }
+
+    static forSocket(socket : net.Socket) {
+        let reader = new BitstreamReader();
+        socket.on('data', data => reader.addBuffer(data));
+        return new ChunkStreamSession({ reader, writer: new BitstreamWriter(socket) });
+    }
+}
+
 export interface ChunkMessage {
     chunkStreamId : number;
     messageStreamId : number;
@@ -804,81 +827,141 @@ export interface ChunkMessage {
 
 export class ChunkStreamReader {
     constructor (
-        readonly id : number,
-        public maxChunkSize : number
+        private bitstream : Bitstream
     ) {
+        this.start();
     }
 
-    messageStreamId : number;
-    timestamp : number;
-    messageLength : number;
-    messageTypeId : number;
-    messagePayload = Buffer.alloc(0);
+    maxChunkSize = 128;
+    chunkStreams = new Map<number, ChunkStreamState>();
     #messageReceived = new Subject<Message>();
-    hasExtendedTimestamp = false;
+    #controlMessageReceived = new Subject<Message>();
+    #acknowledgements = new Subject<number>();
 
-    get messageReceived(): Observable<Message> { return this.messageReceived; }
+    sequenceNumber = 0;
+    windowSize = 0;
+    clientVersion : number;
+    expectsExtendedTimestamp = false;
 
-    abortMessage() {
-        // TODO
-        throw new Error(`Not implemented yet`);
+    get messageReceived(): Observable<Message> { return this.#messageReceived; }
+    get controlMessageReceived(): Observable<Message> { return this.#controlMessageReceived; }
+    get acknowledgements() { return <Observable<number>> this.#acknowledgements; }
+
+    private async start() {
+        await this.handshake();
+
+        while (true) {
+            let chunkHeader = await ChunkHeader.readBlocking(this.bitstream.reader, { params: [ this.expectsExtendedTimestamp ] });
+            this.expectsExtendedTimestamp = chunkHeader.hasExtendedTimestamp;
+            this.receiveChunk(chunkHeader, this.bitstream.reader);
+
+            if (this.bitstream.reader.offset >= this.sequenceNumber + this.windowSize) {
+                this.sequenceNumber += this.windowSize;
+                this.#acknowledgements.next(this.sequenceNumber);
+            }
+        }
     }
 
-    async receiveChunk(header : ChunkHeader, reader : BitstreamReader) {
-        if (header.messageLength !== undefined)
-            this.messageLength = header.messageLength;
+    private async handshake() {
+        this.clientVersion = (await Handshake0.readBlocking(this.bitstream.reader)).version;
+        new Handshake0()
+            .with({ version: 3 })
+            .write(this.bitstream.writer);
+
+        let c1 = await Handshake1.readBlocking(this.bitstream.reader);
+        new Handshake1()
+            .with({
+                time: Math.floor(Date.now() / 1000),
+                random: crypto.randomBytes(C1_RANDOM_SIZE)
+            })
+            .write(this.bitstream.writer)
+        ;
+
+        let c2 = await Handshake2.readBlocking(this.bitstream.reader);
+        new Handshake2()
+            .with({
+                time: c1.time,
+                time2: Math.floor(Date.now() / 1000),
+                randomEcho: c1.random
+            })
+            .write(this.bitstream.writer);
+        ;
+    }
+
+    private getChunkStream(id : number) {
+        let streamState = this.chunkStreams.get(id);
+        if (!streamState)
+            this.chunkStreams.set(id, streamState = {});
+        return streamState;
+    }
+
+    private dispatchMessage(chunkStreamId : number, message : Message) {
+        if (chunkStreamId === 2)
+            this.handleControlMessage(message);
+        else
+            this.#messageReceived.next(message);
+    }
+    
+    private handleControlMessage(message : Message) {
+        switch (message.typeId) {
+            case ProtocolMessageType.SetChunkSize: {
+                this.maxChunkSize = Math.min(Math.max(1, (message.data as SetChunkSizeData).chunkSize), 16777215);
+            } break;
+            case ProtocolMessageType.AbortMessage: {
+                this.getChunkStream((message.data as AbortMessageData).chunkStreamId).messagePayload = Buffer.alloc(0);
+            } break;
+            case ProtocolMessageType.Acknowledgement: {
+                this.sequenceNumber = (message.data as AcknowledgementData).sequenceNumber;
+            } break;
+            case ProtocolMessageType.WindowAcknowledgementSize: {
+                this.windowSize = (message.data as WindowAcknowledgementSizeData).acknowledgementWindowSize;
+            } break;
+            default:
+                this.#messageReceived.next(message);
+        }
+    }
+
+    private async receiveChunk(header : ChunkHeader, reader : BitstreamReader) {
+        let state = this.getChunkStream(header.chunkStreamId);
 
         // Adopt any new state values from the headers for future use
 
         if (header instanceof ChunkHeader0)
-            this.timestamp = header.timestamp;
+            state.timestamp = header.timestamp;
         else if (typeof header.timestamp !== 'undefined')
-            this.timestamp = (this.timestamp + header.timestamp) % MAX_TIMESTAMP;
+            state.timestamp = (state.timestamp + header.timestamp) % MAX_TIMESTAMP;
 
-        if (typeof header.messageStreamId !== 'undefined')
-            this.messageStreamId = header.messageStreamId;
-
-        if (typeof header.messageLength !== 'undefined')
-            this.messageLength = header.messageLength;
-
-        if (typeof header.messageTypeId !== 'undefined')
-            this.messageTypeId = header.messageTypeId;
-
-        if (header.timestamp)
+        state.messageStreamId = header.messageStreamId ?? state.messageStreamId;
+        state.messageLength = header.messageLength ?? state.messageLength;
+        state.messageTypeId = header.messageTypeId ?? state.messageTypeId;
 
         // Fill in all header values based on our current state. This will have the 
         // effect of expanding a compressed header to a normal Type 0 (full) header
         // for any handlers downstream from here.
 
-        header.timestamp = this.timestamp;
-        header.chunkStreamId = this.id;
-        header.messageStreamId = this.messageStreamId;
-        header.messageLength = this.messageLength;
-        header.messageTypeId = this.messageTypeId;
+        header.timestamp = state.timestamp;
+        header.messageStreamId = state.messageStreamId;
+        header.messageLength = state.messageLength;
+        header.messageTypeId = state.messageTypeId;
 
-        let payloadSize = Math.min(this.messageLength - this.messagePayload.length, this.maxChunkSize);
+        let payloadSize = Math.min(state.messageLength - state.messagePayload.length, this.maxChunkSize);
         let payload = await ChunkPayload.withSize(payloadSize).readBlocking(reader);
-        this.messagePayload = Buffer.concat([this.messagePayload, payload.bytes]);
+        state.messagePayload = Buffer.concat([state.messagePayload, payload.bytes]);
 
-        if (this.messagePayload.length === this.messageLength) {
-            // message ready for dispatch
-            this.#messageReceived.next(new Message().with({ 
-                messageStreamId: this.id,
-                length: this.messageLength,
-                timestamp: this.timestamp,
-                typeId: this.messageTypeId ?? header.messageTypeId,
-                data: MessageData.deserialize(this.messagePayload) 
+        if (state.messagePayload.length === state.messageLength) {
+            this.dispatchMessage(header.chunkStreamId, new Message().with({ 
+                messageStreamId: state.messageStreamId,
+                length: state.messageLength,
+                timestamp: state.timestamp,
+                typeId: state.messageTypeId ?? header.messageTypeId,
+                data: MessageData.deserialize(state.messagePayload) 
             }));
-            this.messagePayload = Buffer.alloc(0);
+            state.messagePayload = Buffer.alloc(0);
         }
     }
 }
 
 export interface MultiplexedStreamState {
-    maxChunkSize : number;
-    windowSize : number;
-    limitType : number;
-    sequenceNumber : number;
     hasExtendedTimestamp : boolean;
 }
 
