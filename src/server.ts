@@ -1,4 +1,4 @@
-import { ChunkStreamSession, CONTROL_MESSAGE_STREAM_ID, Message, MessageData, ProtocolMessageType, PROTOCOL_CHUNK_STREAM_ID } from "./chunk-stream";
+import { AudioMessageData, ChunkStreamSession, CONTROL_MESSAGE_STREAM_ID, Message, MessageData, ProtocolMessageType, PROTOCOL_CHUNK_STREAM_ID, VideoMessageData } from "./chunk-stream";
 import * as net from 'net';
 import { Subject } from "rxjs";
 import { DefaultVariant, Field, Variant, VariantMarker } from "@astronautlabs/bitstream";
@@ -54,7 +54,7 @@ export const CommandParameterCount = {
     FCUnpublish: 1,
     FCSubscribe: 1,
     onFCPublish: 1,
-    connect: 1,
+    connect: 0,
     call: 1,
     createStream: 0,
     close: 0,
@@ -75,7 +75,12 @@ export class CommandAMF0Data<T extends object = {}> extends MessageData {
     @Field() private $transactionId : AMF0.Value;
     @Field() private $commandObject : AMF0.Value;
     
-    @Field((i : CommandAMF0Data) => CommandParameterCount[i.commandName] ?? 0) private $parameters : AMF0.Value[];
+    @Field(
+        (i : CommandAMF0Data) => CommandParameterCount[i.commandName] ?? 0, {
+            array: { type: AMF0.Value }
+        }
+    )
+    private $parameters : AMF0.Value[];
 
     get commandName() {
         return this.$commandName?.value as string;
@@ -98,11 +103,55 @@ export class CommandAMF0Data<T extends object = {}> extends MessageData {
     }
 
     set commandObject(value : T) {
-        this.$commandObject = AMF0.Value.object(value);
+        this.$commandObject = AMF0.Value.any(value);
     }
 
     get parameters() {
         return this.$parameters.map(x => x.value);
+    }
+
+    set parameters(value) {
+        this.$parameters = value.map(x => AMF0.Value.any(x));
+    }
+    
+    inspect() { 
+        return `${super.inspect()}: [${this.transactionId}] ` 
+            + `${this.commandName}(${this.parameters.map(p => JSON.stringify(p)).join(', ')})`
+        ;
+    }
+}
+
+@Variant<MessageData>(i => i.typeId === ProtocolMessageType.DataAMF3)
+export class DataAMF3Data<T extends object = {}> extends MessageData {
+    @Field() private $value : AMF3.Value;
+    
+    get value() {
+        return this.$value?.value;
+    }
+
+    set value(value) {
+        this.$value = AMF3.Value.any(value);
+    }
+
+    inspect(): string {
+        return `${super.inspect()}: ${JSON.stringify(this.value)}`;
+    }
+}
+
+@Variant<MessageData>(i => i.typeId === ProtocolMessageType.DataAMF0)
+export class DataAMF0Data<T extends object = {}> extends MessageData {
+    @Field() private $value : AMF0.Value;
+    
+    get value() {
+        return this.$value?.value;
+    }
+
+    set value(value) {
+        this.$value = AMF0.Value.any(value);
+    }
+
+    inspect(): string {
+        return `${super.inspect()}: ${JSON.stringify(this.value)}`;
     }
 }
 
@@ -112,7 +161,12 @@ export class CommandAMF3Data<T extends object = {}> extends MessageData {
     @Field() private $transactionId : AMF3.Value;
     @Field() private $commandObject : AMF3.Value;
     
-    @Field((i : CommandAMF3Data) => CommandParameterCount[i.commandName] ?? 0) private $parameters : AMF3.Value[];
+    @Field(
+        (i : CommandAMF3Data) => CommandParameterCount[i.commandName] ?? 0, {
+            array: { type: AMF3.Value }
+        }
+    )
+    private $parameters : AMF3.Value[];
 
     get commandName() {
         return this.$commandName?.value as string;
@@ -195,7 +249,7 @@ export interface ConnectCommandObject {
 }
 
 @DefaultVariant()
-export class RTMPMessageData extends MessageData {
+export class UnknownMessageData extends MessageData {
     @Field(8*1) messageType : number;
     @Field(8*3) length : number;
     @Field(8*4) timestamp : number;
@@ -203,12 +257,6 @@ export class RTMPMessageData extends MessageData {
     
     @VariantMarker()
     $marker;
-}
-
-@DefaultVariant()
-export class UnknownRTMPMessageData extends RTMPMessageData {
-    @Field((i : RTMPMessageData) => i.length)
-    data : Buffer;
 }
 
 @Variant<MessageData>(i => i.typeId === ProtocolMessageType.UserControl)
@@ -220,7 +268,7 @@ export class UserControlData extends MessageData {
 
 @Variant<UserControlData>(i => i.eventType === UserControlMessageType.StreamBegin)
 export class StreamBeginEventData extends UserControlData {
-    @Field(4) streamID : number;
+    @Field(4*8) streamID : number;
 }
 
 @Variant<UserControlData>(i => i.eventType === UserControlMessageType.StreamEOF)
@@ -264,6 +312,7 @@ export class ServerStream {
 
     destroyed = new Subject<void>();
     messageReceived = new Subject<Message>();
+    dataReceived = new Subject<any>();
 
     notifyBegin() {
         this.session.streamBegin(this.id);
@@ -281,14 +330,35 @@ export class ServerStream {
         this.destroyed.next();
     }
 
-    
-    receiveCommand(commandName : string, transactionId : number, commandObject : any, parameters : any[]) {
+    receiveData(data : any) {
+        this.dataReceived.next(data);
+    }
+
+    async receiveCommand(commandName : string, transactionId : number, commandObject : any, parameters : any[]) {
         console.error(`RTMP: ServerStream(${this.id}): Unhandled command '${commandName}'`);
     }
 
-    receive(message : Message) {
+    receiveMessage(message : Message) {
         this.messageReceived.next(message);
+        switch (message.typeId) {
+            case ProtocolMessageType.DataAMF0:
+            case ProtocolMessageType.DataAMF3: {
+                let data = <DataAMF3Data | DataAMF0Data> message.data;
+                this.dataReceived.next(data.value);
+            } break;
+            case ProtocolMessageType.CommandAMF0:
+            case ProtocolMessageType.CommandAMF3: {
+                let data = <CommandAMF3Data | CommandAMF0Data> message.data;
+                this.receiveCommand(data.commandName, data.transactionId, data.commandObject, data.parameters);
+            } break;
+            default:
+                console.error(`NetStream(${this.id}): Unhandled protocol message ${message.typeId}`);
+        }
     }
+}
+
+export function RPC() {
+    return Reflect.metadata('rtmp:allowRPC', true);
 }
 
 export class ServerControlStream extends ServerStream {
@@ -296,12 +366,13 @@ export class ServerControlStream extends ServerStream {
         super(session, 0);
     }
 
-    receiveCommand(commandName: string, transactionId: number, commandObject: any, parameters: any[]): void {
-        this.session.receiveCommand(commandName, transactionId, commandObject, parameters);
+    async receiveCommand(commandName: string, transactionId: number, commandObject: any, parameters: any[]) {
+        await this.session.receiveCommand(commandName, transactionId, commandObject, parameters);
     }
 }
 
 export class ServerMediaStream extends ServerStream {
+    @RPC()
     pause(paused : boolean, milliseconds : number) {
         this.session.sendCommand0('onStatus', [{
             level: 'error',
@@ -310,6 +381,7 @@ export class ServerMediaStream extends ServerStream {
         }]);
     }
 
+    @RPC()
     seek(milliseconds : number) {
         this.session.sendCommand0('onStatus', [{
             level: 'error',
@@ -318,6 +390,7 @@ export class ServerMediaStream extends ServerStream {
         }]);
     }
 
+    @RPC()
     publish(publishName : string, publishType : 'live' | 'record' | 'append') {
         this.session.sendCommand0('onStatus', [{
             level: 'error',
@@ -326,6 +399,12 @@ export class ServerMediaStream extends ServerStream {
         }]);
     }
 
+    @RPC()
+    private FCPublish(streamName : string) {
+        return streamName;
+    }
+    
+    @RPC()
     play(streamName : string, start : number, duration : number, reset : boolean) {
         this.session.sendCommand0('onStatus', [{
             level: 'error',
@@ -334,6 +413,7 @@ export class ServerMediaStream extends ServerStream {
         }]);
     }
 
+    @RPC()
     play2(params : any) {
         this.session.sendCommand0('onStatus', [{
             level: 'error',
@@ -384,7 +464,7 @@ export class ServerMediaStream extends ServerStream {
         this.videoEnabled.next(enabled);
     }
 
-    sendVideo(timestamp : number, buffer : Buffer) {    
+    sendVideo(timestamp : number, data : Buffer) {    
         if (!this.isVideoEnabled)
             return;
         this.session.chunkSession.send({
@@ -392,11 +472,12 @@ export class ServerMediaStream extends ServerStream {
             messageStreamId: this.id,
             chunkStreamId: ChunkStreams.Audio,
             timestamp,
-            buffer
+            buffer: data,
+            data: null
         });
     }
 
-    sendAudio(timestamp : number, buffer : Buffer) {
+    sendAudio(timestamp : number, data : Buffer) {
         if (!this.isAudioEnabled)
             return;
         this.session.chunkSession.send({
@@ -404,7 +485,8 @@ export class ServerMediaStream extends ServerStream {
             messageStreamId: this.id,
             chunkStreamId: ChunkStreams.Audio,
             timestamp,
-            buffer
+            buffer: data,
+            data: null
         });
     }
 
@@ -421,18 +503,33 @@ export class ServerMediaStream extends ServerStream {
         return false;
     }
 
-    receiveCommand(commandName : string, transactionId : number, commandObject : any, parameters : any[]) {
+    receiveAudio(data : Uint8Array) {
+
+    }
+
+    receiveVideo(data : Uint8Array) {
+
+    }
+
+    receiveMessage(message: Message): void {
+        switch (message.typeId) {
+            case ProtocolMessageType.Audio:
+                this.receiveAudio((message.data as AudioMessageData).data);
+                break;
+            case ProtocolMessageType.Video:
+                this.receiveVideo((message.data as VideoMessageData).data);
+                break;
+            default:
+                super.receiveMessage(message);
+        }
+    }
+
+    async receiveCommand(commandName : string, transactionId : number, commandObject : any, parameters : any[]) {
         switch (commandName) {
             case 'deleteStream':
                 // note that spec says this is on NetStream not NetConnection, but the stream ID being deleted is 
                 // passed as a parameter. Supporting both is prudent in anticipation of this confusion.
                 this.dispose();
-                break;
-            case 'play':
-                this.play(parameters[0], parameters[1], parameters[2], parameters[3]);
-                return;
-            case 'play2':
-                this.play2(parameters[0])
                 break;
             case 'receiveAudio':
                 this.enableAudio(parameters[0]);
@@ -440,28 +537,37 @@ export class ServerMediaStream extends ServerStream {
             case 'receiveVideo':
                 this.enableVideo(parameters[0]);
                 break;
-            case 'publish':
-                this.publish(parameters[0], parameters[1]);
-                break;
-            case 'seek':
-                this.seek(parameters[0]);
-                break;
-            case 'pause':
-                this.pause(parameters[0], parameters[1]);
-                break;
             default:
-                let handled = this.call(commandName, commandObject, parameters[0]);
+                let handled = false;
+
+                if (typeof this[commandName] === 'function') {
+                    if (Reflect.getMetadata('rtmp:allowRPC', this.constructor.prototype, commandName) === true) {
+                        try {
+                            let result = await (this[commandName] as Function).apply(this, parameters);
+                            this.session.sendCommand0('_result', [ result ], { 
+                                transactionId
+                            });
+                        } catch (e) {
+                            this.session.sendCommand0('_error', [{
+                                level: 'error',
+                                code: 'NetStream.Call.Error',
+                                description: `${commandName}(): ${e.message}`
+                            }]);
+                        }
+                        handled = true;
+                    }
+                }
+
+                if (!handled)
+                    handled = this.call(commandName, commandObject, parameters[0]);
+                
                 if (!handled) {
                     this.session.sendCommand0('_error', [{
                         level: 'error',
                         code: 'NetStream.Call.Unhandled',
                         description: `The RPC call '${commandName}' is not handled by this server.`
                     }]);
-                    console.error(`RTMP: Unhandled RPC call '${commandName}' on control stream. [txn=${transactionId}]`);
-                    console.error(`Command Object:`);
-                    console.dir(commandObject);
-                    console.error(`Params:`);
-                    console.dir(parameters);
+                    console.error(`◾     ◾ | Unhandled RPC: stream.${commandName}(${parameters.map(p => JSON.stringify(p)).join(', ')}) [txn=${transactionId}]`);
                 }
         }
     }
@@ -469,9 +575,11 @@ export class ServerMediaStream extends ServerStream {
 
 export class Session {
     constructor(
-        readonly socket : net.Socket,
-        readonly server : Server
+        readonly server : Server,
+        readonly socket : net.Socket
     ) {
+        this.pingTime = server.preferredPingTime;
+        
         // Socket
         this.server.connections.push(this);
         this.socket.on('close', () => this.server.connections = this.server.connections.filter(x => x !== this));
@@ -485,6 +593,16 @@ export class Session {
     chunkSession : ChunkStreamSession;
 
     private receiveMessage(message : Message) {
+        console.log(
+            `🔽     ✅ | ${message.data.inspect()} `
+            + `| msid=${message.messageStreamId}, type=${message.typeId}`
+        );
+
+        if (message.messageStreamId !== 0) {
+            this.handleStreamMessage(message);
+            return;
+        }
+
         switch (message.typeId) {
             case ProtocolMessageType.UserControl: {
                 let eventData = message.data as UserControlData;
@@ -507,24 +625,22 @@ export class Session {
                         throw new Error(`Unknown user control message type: ${eventData.eventType}`);
                 }
             }
+            case ProtocolMessageType.DataAMF0:
+            case ProtocolMessageType.DataAMF3: {
+                let receiver = message.messageStreamId === 0 ? this : this.getStream(message.messageStreamId);
+                let data = <DataAMF3Data | DataAMF0Data> message.data;
+                receiver.receiveData(data.value);
+            } break;
             case ProtocolMessageType.CommandAMF0:
             case ProtocolMessageType.CommandAMF3: {
                 let data = <CommandAMF3Data | CommandAMF0Data> message.data;
                 let receiver = message.messageStreamId === 0 ? this : this.getStream(message.messageStreamId);
 
-                if (!receiver) {
-                    this.sendCommand0('onStatus', [{
-                        level: 'error',
-                        code: 'NetStream.Stream.Failed',
-                        description: `There is no stream with ID ${message.messageStreamId}. Use createStream first.`
-                    }]);
-                    return;
-                }
 
                 receiver.receiveCommand(data.commandName, data.transactionId, data.commandObject, data.parameters)
-            }
+            } break;
             default:
-                this.handleStreamMessage(message);
+                console.error(`NetConnection: Unhandled protocol message ${message.typeId}`);
         }
     }
 
@@ -535,10 +651,32 @@ export class Session {
     }
 
     private handleStreamMessage(message : Message) {
-        this._streams.get(message.messageStreamId)?.receive(message);
+        let stream = this._streams.get(message.messageStreamId);
+        if (stream) {
+            stream.receiveMessage(message);
+            return;
+        }
+        if ([ProtocolMessageType.CommandAMF0, ProtocolMessageType.CommandAMF3].includes(message.typeId)) {
+            let data = message.data as (CommandAMF0Data | CommandAMF3Data);
+            console.log(`Received AMF command for stream ${message.messageStreamId} but this has not been set up yet.`);
+            this.sendCommand0('onStatus', [{
+                level: 'error',
+                code: 'NetStream.Stream.Failed',
+                description: `There is no stream with ID ${message.messageStreamId}. Use createStream first.`
+            }], { transactionId: data.transactionId });
+        } else {
+            console.error(`Received protocol message ${message.typeId} for nonexistent message stream ${message.messageStreamId}`);
+        }
+
+        return;
     }
 
-    receiveCommand(commandName: string, transactionId: number, commandObject: any, parameters: any[]) {
+    dataReceived = new Subject<any>();
+    receiveData(data : any) {
+        this.dataReceived.next(data);
+    }
+
+    async receiveCommand(commandName: string, transactionId: number, commandObject: any, parameters: any[]) {
         switch (commandName) {
             case 'connect':
                 this.onConnect(commandObject, parameters[0]);
@@ -552,11 +690,7 @@ export class Session {
                 this.getStream(parameters[0])?.dispose();
                 break;
             default:
-                console.error(`RTMP: Unhandled RPC call '${commandName}' on control stream. [txn=${transactionId}]`);
-                console.error(`Command Object:`);
-                console.dir(commandObject);
-                console.error(`Params:`);
-                console.dir(parameters);
+                console.error(`◾     ◾ | Unhandled RPC: stream.${commandName}(${parameters.map(p => JSON.stringify(p)).join(', ')}) [txn=${transactionId}]`);
         }
     }
 
@@ -580,7 +714,26 @@ export class Session {
         this.streamCreated.next(stream);
     }
 
+    private pingInterval;
+    private _pingTime;
+
+    get pingTime() {
+        return this._pingTime;
+    }
+
+    set pingTime(value) {
+        this._pingTime = value;
+        if (this.pingInterval)
+            this.startPingTimer();
+    }
+
+    private startPingTimer() {
+        clearInterval(this.pingInterval);
+        this.pingInterval = setInterval(() => this.ping(), this.pingTime);
+    }
+
     private onConnect(command : ConnectCommandObject, args : Record<string, any>) {
+        this.startPingTimer();
         this.chunkSession.setAcknowledgementWindow(this.server.preferredWindowSize);
         this.chunkSession.setPeerBandwidth(this.server.preferredWindowSize, 'dynamic');
         this.chunkSession.setChunkSize(this.server.preferredChunkSize);
@@ -589,9 +742,10 @@ export class Session {
         controlStream.notifyBegin();
         this._streams.set(0, controlStream);
 
-        this.sendCommand0('_result', [{ 
+        this.sendCommand0('_result', [{
             code: 'NetConnection.Connect.Success',
             description: 'Connection succeeded',
+            objectEncoding: 0,
             data: {
                 version: this.server.fullVersion,
                 vendor: `AL`
@@ -615,8 +769,12 @@ export class Session {
             messageStreamId: CONTROL_MESSAGE_STREAM_ID,
             messageTypeId: ProtocolMessageType.UserControl,
             timestamp: 0,
-            buffer: Buffer.from(data.serialize())
+            data
         });
+    }
+
+    ping() {
+        this.userControl(new PingRequestData().with({ timestamp: Date.now() }));
     }
 
     streamBegin(streamID : number) {
@@ -634,18 +792,19 @@ export class Session {
     sendCommand0(commandName : string, parameters : any[], options : { transactionId? : number, commandObject? : any } = {}) {
         let transactionId = options.transactionId ?? 0;
         let commandObject = options.commandObject ?? null;
-
+        let data = new CommandAMF0Data().with({ 
+            commandName,
+            transactionId,
+            commandObject,
+            parameters
+        });
+        
         this.chunkSession.send({
             chunkStreamId: ChunkStreams.Invoke,
             messageStreamId: CONTROL_MESSAGE_STREAM_ID,
             messageTypeId: ProtocolMessageType.CommandAMF0,
             timestamp: 0,
-            buffer: Buffer.from(new CommandAMF0Data().with({ 
-                commandName,
-                transactionId,
-                commandObject,
-                parameters
-            }).serialize())
+            data
         });
     }
 
@@ -658,12 +817,12 @@ export class Session {
             messageStreamId: CONTROL_MESSAGE_STREAM_ID,
             messageTypeId: ProtocolMessageType.CommandAMF3,
             timestamp: 0,
-            buffer: Buffer.from(new CommandAMF3Data().with({ 
+            data: new CommandAMF3Data().with({ 
                 commandName,
                 transactionId,
                 commandObject,
                 parameters
-            }).serialize())
+            })
         });
     }
 }
@@ -679,13 +838,15 @@ export class Server {
     public connections : Session[] = [];
     preferredWindowSize = 5000000;
     preferredChunkSize = 128;
+    preferredPingTime = 60000;
 
     protected createSession(socket : net.Socket) {
-        return new Session(socket, this);
+        return new Session(this, socket);
     }
 
     async listen() {
         this._server = new net.Server(socket => this.createSession(socket));
         this._server.listen(this.port);
+        console.log(`Listening on port ${this.port}`);
     }
 }

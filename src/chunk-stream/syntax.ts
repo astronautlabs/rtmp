@@ -1,21 +1,23 @@
 import { BitstreamElement, Field, Variant, VariantMarker } from "@astronautlabs/bitstream";
 import { C1_RANDOM_SIZE, ProtocolMessageType } from "./constants";
 
-export class Message extends BitstreamElement {
-    readonly typeId : number;
-    readonly length : number;
-    readonly timestamp : number;
-    readonly messageStreamId : number;
-
-    @Field() data : MessageData;
-}
-
 export class MessageData extends BitstreamElement {
     constructor(public typeId? : number) {
         super();
     }
+
+    inspect() {
+        return this.constructor.name.replace(/Data$/, '');
+    }
 }
 
+export class VideoMessageData extends MessageData {
+    data : Uint8Array;
+}
+
+export class AudioMessageData extends MessageData {
+    data : Uint8Array;
+}
 export abstract class ChunkStreamId extends BitstreamElement {
     /**
      * This field identifies one of four format used by the ’chunk message header’. 
@@ -32,6 +34,7 @@ export abstract class ChunkStreamId extends BitstreamElement {
 @Variant<ChunkStreamId>(i => 2 <= i.csidPart1 && i.csidPart1 <= 63)
 export class ChunkStreamId1 extends ChunkStreamId {
     get chunkStreamId() { return this.csidPart1 };
+    set chunkStreamId(value) { this.csidPart1 = value; }
 }
 
 /**
@@ -86,7 +89,11 @@ export class ChunkHeader extends BitstreamElement {
     basicTimestamp : number;
     messageLength : number;
     messageTypeId : number;
-    messageStreamId : number;
+    
+    #messageStreamId : number;
+    
+    get messageStreamId() { return this.#messageStreamId; }
+    set messageStreamId(value) { this.#messageStreamId = value; }
 
     @VariantMarker() $variant;
 
@@ -116,34 +123,46 @@ export class ChunkHeader extends BitstreamElement {
 
 @Variant<ChunkHeader>(i => i.fmt === 0)
 export class ChunkHeader0 extends ChunkHeader {
+    fmt = 0;
     @Field(8*3) basicTimestamp : number;
     @Field(8*3) messageLength : number;
     @Field(8*1) messageTypeId : number;
-    @Field(8*4) messageStreamId : number;
+    @Field(8*4) private $messageStreamId : Uint8Array;
+
+    get messageStreamId() {
+        if (!this.$messageStreamId)
+            return undefined;
+        return new DataView(this.$messageStreamId.buffer).getUint32(0, true);
+    }
+
+    set messageStreamId(value) {
+        this.$messageStreamId = new Uint8Array(4);
+        new DataView(this.$messageStreamId.buffer).setUint32(0, value, true);
+    }
 }
 
 @Variant<ChunkHeader>(i => i.fmt === 1)
 export class ChunkHeader1 extends ChunkHeader {
+    fmt = 1;
     @Field(8*3) basicTimestamp : number;
     @Field(8*3) messageLength : number;
     @Field(8*1) messageTypeId : number;
-    messageStreamId : undefined;
 }
 
 @Variant<ChunkHeader>(i => i.fmt === 2)
 export class ChunkHeader2 extends ChunkHeader {
+    fmt = 2;
     @Field(8*3) basicTimestamp : number;
     messageLength : undefined;
     messageTypeId : undefined;
-    messageStreamId : undefined;
 }
 
 @Variant<ChunkHeader>(i => i.fmt === 3)
 export class ChunkHeader3 extends ChunkHeader {
+    fmt = 3;
     basicTimestamp : undefined;
     messageLength : undefined;
     messageTypeId : undefined;
-    messageStreamId : undefined;
 }
 
 export class Handshake0 extends BitstreamElement {
@@ -164,19 +183,19 @@ export class Handshake1 extends BitstreamElement {
      * endpoint. This may be 0, or some arbitrary value. To synchronize multiple chunkstreams, the endpoint may wish 
      * to send the current value of the other chunkstream’s timestamp.
      */
-    @Field(8*4) time = 0;
+    @Field(8*4) time : number = 0;
 
     /**
      *  This field MUST be all 0s.
      */
-    @Field(8*4, { writtenValue: () => 0 }) zero = 0;
+    @Field(8*4, { writtenValue: () => 0 }) zero : number = 0;
 
     /**
      * This field can contain any arbitrary values. Since each endpoint has to distinguish between the response to the 
      * handshake it has initiated and the handshake initiated by its peer,this data SHOULD send something sufficiently 
      * random. But there is no need for cryptographically-secure randomness, or even dynamic values
      */
-    @Field(8*C1_RANDOM_SIZE) random = Buffer.alloc(C1_RANDOM_SIZE);
+    @Field(8*C1_RANDOM_SIZE) random : Buffer = Buffer.alloc(C1_RANDOM_SIZE);
 }
 
 export class Handshake2 extends BitstreamElement {
@@ -195,7 +214,7 @@ export class Handshake2 extends BitstreamElement {
      * use the time and time2 fields together with the current timestamp as a quick estimate of the bandwidth and/or 
      * latency of the connection, but this is unlikely to be useful.
      */
-    @Field(1*1528) randomEcho : Buffer;
+    @Field(8*C1_RANDOM_SIZE) randomEcho : Buffer;
 }
 
 @Variant<MessageData>(i => i.typeId === ProtocolMessageType.SetChunkSize)
@@ -213,7 +232,9 @@ export class AbortMessageData extends MessageData {
 
 @Variant<MessageData>(i => i.typeId === ProtocolMessageType.Acknowledgement)
 export class AcknowledgementData extends MessageData {
-    sequenceNumber : number;
+    @Field(8*4) sequenceNumber : number;
+
+    inspect() { return `${super.inspect()}[seq=${this.sequenceNumber}]`; }
 }
 
 @Variant<MessageData>(i => i.typeId === ProtocolMessageType.WindowAcknowledgementSize)
@@ -225,4 +246,13 @@ export class WindowAcknowledgementSizeData extends MessageData {
 export class SetPeerBandwidthData extends MessageData {
     @Field(8*4) acknowledgementWindowSize : number;
     @Field(8*1) limitType : number;
+}
+
+export class Message extends BitstreamElement {
+    readonly typeId : number;
+    readonly length : number;
+    readonly timestamp : number;
+    readonly messageStreamId : number;
+
+    @Field() data : MessageData;
 }

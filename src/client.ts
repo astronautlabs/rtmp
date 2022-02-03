@@ -3,6 +3,7 @@ import { EventEmitter } from "stream";
 import * as net from 'net';
 import { ChunkStreamSession } from "./chunk-stream";
 import { Handshake0, Handshake1, Handshake2 } from "./chunk-stream/syntax";
+import { AcknowledgedWritable } from "./chunk-stream/acknowledged-writable";
 
 export class Client {
     private socket : net.Socket;
@@ -35,8 +36,14 @@ export class Client {
 
         this.socket = net.createConnection({ host, port });
         this.reader = new BitstreamReader();
-        this.writer = new BitstreamWriter(this.socket);
-        this.chunkSession = new ChunkStreamSession({ reader: this.reader, writer: this.writer });
+
+        let writable = new AcknowledgedWritable(this.socket);
+        this.writer = new BitstreamWriter(writable);
+        this.chunkSession = new ChunkStreamSession({ 
+            reader: this.reader, 
+            writable,
+            writer: this.writer 
+        });
 
         // TODO
 

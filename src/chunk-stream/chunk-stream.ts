@@ -5,6 +5,8 @@ import { Observable, Subject } from "rxjs";
 import { Bitstream } from "../util";
 import { AbortMessageData, AcknowledgementData, ChunkHeader, ChunkHeader0, ChunkHeader1, ChunkHeader2, ChunkHeader3, Handshake0, Handshake1, Handshake2, Message, MessageData, SetChunkSizeData, SetPeerBandwidthData, WindowAcknowledgementSizeData } from "./syntax";
 import { C1_RANDOM_SIZE, CONTROL_MESSAGE_STREAM_ID, MAX_TIMESTAMP, ProtocolMessageType, PROTOCOL_CHUNK_STREAM_ID } from "./constants";
+import { AcknowledgedWritable } from "./acknowledged-writable";
+import { AudioMessageData, VideoMessageData } from ".";
 
 export interface ChunkStreamState {
     timestamp? : number;
@@ -41,7 +43,7 @@ export class ChunkStreamWriter {
     private getStateForStream(id : number): ChunkStreamState {
         let state = this.streamStates.get(id);
         if (!state)
-            this.streamStates.set(id, {});
+            this.streamStates.set(id, state = {});
         return state;
     }
 
@@ -57,22 +59,45 @@ export class ChunkStreamWriter {
     }
 
     send(message : ChunkMessage) {
+        message.bytesSent = 0;
+        message.buffer = Buffer.from(message.data.serialize());
+
         let streamQueue = this.getQueueForStream(message.chunkStreamId);
-        streamQueue.push(message);
 
-        clearTimeout(this.writeTimeout);
-        this.writeTimeout = setTimeout(() => this.write());
+        if (streamQueue.length === 0 && message.buffer.length < this.maxChunkSize) {
 
-        if (message.buffer.length < this.maxChunkSize) {
             // Send immediately without queuing
-            new ChunkHeader0().with({
-                chunkStreamId: message.chunkStreamId,
-                messageStreamId: message.messageStreamId,
-                messageTypeId: message.messageTypeId,
-                messageLength: message.buffer.length
-            }).write(this.bitstream.writer);
-            this.bitstream.writer.writeBuffer(message.buffer);
+            new ChunkHeader0()
+                .with({
+                    chunkStreamId: message.chunkStreamId,
+                    messageStreamId: message.messageStreamId,
+                    messageTypeId: message.messageTypeId,
+                    messageLength: message.buffer.length
+                })
+                .write(this.bitstream.writer)
+            ;
+
+            this.bitstream.writer.writeBytes(message.buffer);
+            
+            console.log(
+                `🔼 [${message.chunkStreamId}] 🚀 | ${message.data.inspect()} `
+                + `| msid=${message.messageStreamId}, type=${message.messageTypeId}, `
+                    + `progress=${message.buffer.length}/${message.buffer.length}`
+            );
+
             return;
+        } else {
+            
+            console.log(
+                `🔼 [${message.chunkStreamId}] ⌚ | ${message.data.inspect()} `
+                + `| msid=${message.messageStreamId}, type=${message.messageTypeId}, `
+                    + `progress=${message.bytesSent}/${message.buffer.length}`
+            );
+
+            streamQueue.push(message);
+    
+            clearTimeout(this.writeTimeout);
+            this.writeTimeout = setTimeout(() => this.write());
         }
     }
 
@@ -83,11 +108,7 @@ export class ChunkStreamWriter {
             messageStreamId: CONTROL_MESSAGE_STREAM_ID,
             messageTypeId: ProtocolMessageType.SetChunkSize,
             timestamp: 0,
-            buffer: Buffer.from(
-                new SetChunkSizeData()
-                .with({ chunkSize })
-                .serialize()
-            )
+            data: new SetChunkSizeData().with({ chunkSize })
         })
     }
 
@@ -102,11 +123,8 @@ export class ChunkStreamWriter {
             messageStreamId: CONTROL_MESSAGE_STREAM_ID,
             messageTypeId: ProtocolMessageType.AbortMessage,
             timestamp: 0,
-            buffer: Buffer.from(
-                new AbortMessageData()
-                    .with({ chunkStreamId })
-                    .serialize()
-            )
+            data: new AbortMessageData()
+                .with({ chunkStreamId })
         })
     }
 
@@ -116,11 +134,8 @@ export class ChunkStreamWriter {
             messageStreamId: CONTROL_MESSAGE_STREAM_ID,
             messageTypeId: ProtocolMessageType.WindowAcknowledgementSize,
             timestamp: 0,
-            buffer: Buffer.from(
-                new WindowAcknowledgementSizeData()
-                    .with({ acknowledgementWindowSize })
-                    .serialize()
-            )
+            data: new WindowAcknowledgementSizeData()
+                .with({ acknowledgementWindowSize })
         });
     }
 
@@ -130,11 +145,8 @@ export class ChunkStreamWriter {
             messageStreamId: CONTROL_MESSAGE_STREAM_ID,
             messageTypeId: ProtocolMessageType.SetPeerBandwidth,
             timestamp: 0,
-            buffer: Buffer.from(
-                new SetPeerBandwidthData()
-                    .with({ acknowledgementWindowSize, limitType: { hard: 0, soft: 1, dynamic: 2 }[limitType] })
-                    .serialize()
-            )
+            data: new SetPeerBandwidthData()
+                .with({ acknowledgementWindowSize, limitType: { hard: 0, soft: 1, dynamic: 2 }[limitType] })
         });
     }
     
@@ -144,11 +156,8 @@ export class ChunkStreamWriter {
             messageStreamId: CONTROL_MESSAGE_STREAM_ID,
             messageTypeId: ProtocolMessageType.Acknowledgement,
             timestamp: 0,
-            buffer: Buffer.from(
-                new AcknowledgementData()
+            data: new AcknowledgementData()
                 .with({ sequenceNumber })
-                .serialize()
-            )
         });
     }
 
@@ -165,6 +174,7 @@ export class ChunkStreamWriter {
             }
 
             let state = this.getStateForStream(streamId);
+            let header : ChunkHeader;
 
             if (!message.forceFullHeader && state.messageStreamId === message.messageStreamId) {
                 let timestampDelta = message.timestamp - state.timestamp;
@@ -172,39 +182,37 @@ export class ChunkStreamWriter {
                 if (state.messageLength === message.buffer.length && state.messageTypeId === message.messageTypeId) {
                     if (state.timestampDelta === timestampDelta) {
                         // Type 3
-                        new ChunkHeader3()
-                            .write(this.bitstream.writer);
+                        header = new ChunkHeader3().with({
+                            chunkStreamId: streamId
+                        })
                     } else {
                         // Type 2
-                        new ChunkHeader2()
-                            .with({
-                                timestamp: timestampDelta
-                            })
-                            .write(this.bitstream.writer);
+                        header = new ChunkHeader2().with({
+                            chunkStreamId: streamId,
+                            timestamp: timestampDelta
+                        });
                     }
                 } else {
                     // Type 1
-                    new ChunkHeader1()
-                        .with({
-                            timestamp: timestampDelta,
-                            messageLength: message.buffer.length,
-                            messageTypeId: message.messageTypeId
-                        })
-                        .write(this.bitstream.writer);
+                    header = new ChunkHeader1().with({
+                        chunkStreamId: streamId,
+                        timestamp: timestampDelta,
+                        messageLength: message.buffer.length,
+                        messageTypeId: message.messageTypeId
+                    });
                 }
 
                 state.timestampDelta = timestampDelta;
             } else {
                 // Type 0
 
-                new ChunkHeader0()
-                    .with({
-                        timestamp: message.timestamp,
-                        messageLength: message.buffer.length,
-                        messageTypeId: message.messageTypeId,
-                        messageStreamId: message.messageStreamId
-                    })
-                    .write(this.bitstream.writer);
+                header = new ChunkHeader0().with({
+                    chunkStreamId: streamId,
+                    timestamp: message.timestamp,
+                    messageLength: message.buffer.length,
+                    messageTypeId: message.messageTypeId,
+                    messageStreamId: message.messageStreamId
+                });
 
                 // The semantics of timestamp delta after receiving Type 0 is unclear:
                 // - Does the receiver compute the delta implicitly when receiving two consecutive Type-0's
@@ -214,9 +222,12 @@ export class ChunkStreamWriter {
 
                 state.timestampDelta = undefined;
             }
-            
+
+            header.write(this.bitstream.writer);
+
             let writeSize = Math.min(this.maxChunkSize, message.buffer.length - message.bytesSent);
-            this.bitstream.writer.writeBuffer(message.buffer.slice(message.bytesSent, message.bytesSent + writeSize));
+            this.bitstream.writer.writeBytes(message.buffer.slice(message.bytesSent, message.bytesSent + writeSize));
+            
             message.bytesSent += writeSize;
 
             state.messageStreamId = message.messageStreamId;
@@ -225,6 +236,14 @@ export class ChunkStreamWriter {
             state.timestamp = message.timestamp;
 
             let remains = message.buffer.length - message.bytesSent;
+            
+            console.log(
+                `🔼 [${streamId}] ${remains <= 0 ? '✅' : '⬛'} | ${header.constructor.name.replace(/ChunkHeader/, 'Type')} ` 
+                + `| ${message.data.inspect()} `
+                + `| msid=${message.messageStreamId}, type=${message.messageTypeId}, `
+                    + `progress=${message.bytesSent}/${message.buffer.length}`
+            );
+
             if (remains <= 0) {
                 if (remains < 0) {
                     console.error(`bug: remains should be positive (${remains})`);
@@ -264,17 +283,24 @@ export class ChunkStreamSession {
             case ProtocolMessageType.SetPeerBandwidth: {
                 let data = message.data as SetPeerBandwidthData;
 
+                let windowSize : number;
                 if (data.limitType === 0)
-                    this.writer.windowSize = data.acknowledgementWindowSize;
+                    windowSize = data.acknowledgementWindowSize;
                 else if (data.limitType === 1)
-                    this.writer.windowSize = Math.min(this.writer.windowSize, data.acknowledgementWindowSize);
+                    windowSize = Math.min(this.writer.windowSize, data.acknowledgementWindowSize);
                 else if (data.limitType === 2 && this.writer.limitType === 0) {
-                    this.writer.windowSize = data.acknowledgementWindowSize;
+                    windowSize = data.acknowledgementWindowSize;
                     data.limitType = 0;
                 }
                 
+                this.writer.windowSize = windowSize;
+                this.bitstream.writable.windowSize = windowSize;
                 this.writer.limitType = data.limitType;
             } break;
+            case ProtocolMessageType.Acknowledgement: {
+                let data = message.data as AcknowledgementData;
+                this.bitstream.writable.acknowledge(data.sequenceNumber);
+            }
             default:
                 this.#messageReceived.next(message);
         }
@@ -299,7 +325,14 @@ export class ChunkStreamSession {
     static forSocket(socket : net.Socket) {
         let reader = new BitstreamReader();
         socket.on('data', data => reader.addBuffer(data));
-        return new ChunkStreamSession({ reader, writer: new BitstreamWriter(socket) });
+
+        let writable = new AcknowledgedWritable(socket);
+
+        return new ChunkStreamSession({ 
+            reader, 
+            writable,
+            writer: new BitstreamWriter(writable)
+        });
     }
 }
 
@@ -308,7 +341,8 @@ export interface ChunkMessage {
     messageStreamId : number;
     messageTypeId : number;
     timestamp : number;
-    buffer : Buffer;
+    data : MessageData,
+    buffer? : Buffer;
     bytesSent? : number;
     forceFullHeader?: boolean;
 }
@@ -341,9 +375,9 @@ export class ChunkStreamReader {
         while (true) {
             let chunkHeader = await ChunkHeader.readBlocking(this.bitstream.reader, { params: [ this.expectsExtendedTimestamp ] });
             this.expectsExtendedTimestamp = chunkHeader.hasExtendedTimestamp;
-            this.receiveChunk(chunkHeader, this.bitstream.reader);
+            await this.receiveChunk(chunkHeader, this.bitstream.reader);
 
-            if (this.bitstream.reader.offset >= this.sequenceNumber + this.windowSize) {
+            if (this.windowSize > 0 && this.bitstream.reader.offset >= this.sequenceNumber + this.windowSize) {
                 this.sequenceNumber += this.windowSize;
                 this.#acknowledgements.next(this.sequenceNumber);
             }
@@ -378,8 +412,11 @@ export class ChunkStreamReader {
 
     private getChunkStream(id : number) {
         let streamState = this.chunkStreams.get(id);
-        if (!streamState)
-            this.chunkStreams.set(id, streamState = {});
+        if (!streamState) {
+            this.chunkStreams.set(id, streamState = { 
+                messagePayload: Buffer.alloc(0)
+            });
+        }
         return streamState;
     }
 
@@ -432,18 +469,41 @@ export class ChunkStreamReader {
         header.messageLength = state.messageLength;
         header.messageTypeId = state.messageTypeId;
 
+        //console.dir(header);
+
         let payloadSize = Math.min(state.messageLength - state.messagePayload.length, this.maxChunkSize);
+
+        
+        //console.log(`${header.constructor.name}[csid=${header.chunkStreamId}]: messageLength=${state.messageLength}, chunkLength=${payloadSize}/${this.maxChunkSize}`);
 
         let payload = await reader.readBytesBlocking(Buffer.alloc(payloadSize));
         state.messagePayload = Buffer.concat([state.messagePayload, payload]);
+        let done = state.messagePayload.length === state.messageLength;
 
-        if (state.messagePayload.length === state.messageLength) {
+        if (globalThis.RTMP_CHUNK_TRACE === true) {
+            console.log(
+                `🔽 [${header.chunkStreamId}] ${ done ? '◾' : '⬛'} `
+                + `| ${header.constructor.name.replace(/ChunkHeader/, 'Type')} | msid=${header.messageStreamId}, type=${header.messageTypeId}, `
+                    + `payload=${state.messagePayload.length}/${state.messageLength}`
+            );
+        }
+
+        if (done) {
+            let data : MessageData;
+
+            if (header.messageTypeId === ProtocolMessageType.Audio)
+                data = new AudioMessageData().with({ data: state.messagePayload });
+            else if (header.messageTypeId === ProtocolMessageType.Video)
+                data = new VideoMessageData().with({ data: state.messagePayload });
+            else
+                data = MessageData.deserialize(state.messagePayload, { params: [ header.messageTypeId ] });
+            
             this.dispatchMessage(header.chunkStreamId, new Message().with({
                 messageStreamId: state.messageStreamId,
                 length: state.messageLength,
                 timestamp: state.timestamp,
-                typeId: state.messageTypeId ?? header.messageTypeId,
-                data: MessageData.deserialize(state.messagePayload)
+                typeId: header.messageTypeId,
+                data
             }));
             state.messagePayload = Buffer.alloc(0);
         }
