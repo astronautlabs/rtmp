@@ -23,7 +23,8 @@ Comprehensive Typescript implementation of Adobe's Real Time Messaging Protocol 
 # Motivation
 
 This library is intended to provide an approachable and comprehensive RTMP implementation for Node.js using Typescript.
-It uses similar concepts to those of Adobe Flash / Flash Media Server / Flex in exposing RTMP to users.
+It uses similar concepts to those of Adobe Flash / Flash Media Server / Flex in exposing RTMP to users. Supports AMF v0
+and v3 via [@astronautlabs/amf](https://github.com/astronautlabs/amf)
 
 # Installation
 
