@@ -294,7 +294,7 @@ export class StreamIsRecordedEventData extends UserControlData {
 
 @Variant<UserControlData>(i => i.eventType === UserControlMessageType.PingRequest)
 export class PingRequestData extends UserControlData {
-    @Field(4) timestamp: number;
+    @Field(4*8) timestamp: number;
 }
 
 @Variant<UserControlData>(i => i.eventType === UserControlMessageType.PingResponse)
@@ -582,7 +582,7 @@ export class Session {
         
         // Socket
         this.server.connections.push(this);
-        this.socket.on('close', () => this.server.connections = this.server.connections.filter(x => x !== this));
+        this.socket.on('close', () => this.close());
         
         // Chunk Session
 
@@ -590,6 +590,13 @@ export class Session {
         this.chunkSession.messageReceived.subscribe(m => this.receiveMessage(m));
     }
     
+    close() {
+        console.log(`Client disconnected`);
+        this.server.connections = this.server.connections.filter(x => x !== this)
+        this.socket.end();
+        clearInterval(this.pingInterval);
+    }
+
     chunkSession : ChunkStreamSession;
 
     private receiveMessage(message : Message) {
