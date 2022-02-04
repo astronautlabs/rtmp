@@ -41,7 +41,7 @@ import 'reflect-metadata';
 import 'source-map-support/register';
 
 import { Socket } from 'net';
-import * as RTMP from '.';
+import * as RTMP from '@astronautlabs/rtmp';
 
 class MyServer extends RTMP.Server {
     protected createSession(socket: Socket): RTMP.Session {
