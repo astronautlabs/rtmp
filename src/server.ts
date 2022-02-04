@@ -503,21 +503,21 @@ export class ServerMediaStream extends ServerStream {
         return false;
     }
 
-    receiveAudio(data : Uint8Array) {
+    receiveAudio(timestamp : number, data : Uint8Array) {
 
     }
 
-    receiveVideo(data : Uint8Array) {
+    receiveVideo(timestamp : number, data : Uint8Array) {
 
     }
 
     receiveMessage(message: Message): void {
         switch (message.typeId) {
             case ProtocolMessageType.Audio:
-                this.receiveAudio((message.data as AudioMessageData).data);
+                this.receiveAudio(message.timestamp, (message.data as AudioMessageData).data);
                 break;
             case ProtocolMessageType.Video:
-                this.receiveVideo((message.data as VideoMessageData).data);
+                this.receiveVideo(message.timestamp, (message.data as VideoMessageData).data);
                 break;
             default:
                 super.receiveMessage(message);
