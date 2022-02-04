@@ -3,6 +3,8 @@
   "version": "0.0.1",
   "description": "Real Time Messaging Protocol (RTMP)",
   "main": "dist/index.js",
+  "module": "dist.esm/index.js",
+  "types": "dist/index.d.ts",
   "publishConfig": {
     "access": "public"
   },
@@ -17,7 +19,8 @@
     "adobe"
   ],
   "scripts": {
-    "build": "tsc -b",
+    "clean": "rimraf dist dist.esm",
+    "build": "npm run clean && tsc -b && tsc -b tsconfig.esm.json",
     "sample:server": "npm run build && node dist/server.example",
     "test": "echo \"Error: no test specified\" && exit 1",
     "prepublishOnly": "npm run build"
@@ -32,6 +35,7 @@
   "devDependencies": {
     "@types/node": "^17.0.10",
     "reflect-metadata": "^0.1.13",
+    "rimraf": "^3.0.2",
     "source-map-support": "^0.5.21"
   }
 }

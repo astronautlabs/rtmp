@@ -1,5 +1,8 @@
 node_modules/
 dist/**/*.test.js
 dist/**/*.example.js
+dist.esm/**/*.test.js
+dist.esm/**/*.example.js
+
 src/**/*.test.ts
 src/**/*.example.ts
