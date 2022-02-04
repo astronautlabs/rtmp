@@ -3,6 +3,9 @@
   "version": "0.0.1",
   "description": "Real Time Messaging Protocol (RTMP)",
   "main": "dist/index.js",
+  "publishConfig": {
+    "access": "public"
+  },
   "keywords": [
     "rtmp",
     "media",
@@ -16,7 +19,8 @@
   "scripts": {
     "build": "tsc -b",
     "sample:server": "npm run build && node dist/server.example",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "prepublishOnly": "npm run build"
   },
   "author": "Astronaut Labs, LLC",
   "license": "MIT",
