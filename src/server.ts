@@ -464,7 +464,7 @@ export class ServerMediaStream extends ServerStream {
         this.videoEnabled.next(enabled);
     }
 
-    sendVideo(timestamp : number, data : Buffer) {    
+    sendVideo(timestamp : number, data : Uint8Array) {
         if (!this.isVideoEnabled)
             return;
         this.session.chunkSession.send({
@@ -472,12 +472,12 @@ export class ServerMediaStream extends ServerStream {
             messageStreamId: this.id,
             chunkStreamId: ChunkStreams.Audio,
             timestamp,
-            buffer: data,
+            buffer: Buffer.from(data),
             data: null
         });
     }
 
-    sendAudio(timestamp : number, data : Buffer) {
+    sendAudio(timestamp : number, data : Uint8Array) {
         if (!this.isAudioEnabled)
             return;
         this.session.chunkSession.send({
@@ -485,7 +485,7 @@ export class ServerMediaStream extends ServerStream {
             messageStreamId: this.id,
             chunkStreamId: ChunkStreams.Audio,
             timestamp,
-            buffer: data,
+            buffer: Buffer.from(data),
             data: null
         });
     }
