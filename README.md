@@ -3,18 +3,16 @@
 > **[📜 Adobe RTMP (December 21, 2012)](https://rtmp.veriskope.com/docs/spec/)**  
 > Adobe’s Real Time Messaging Protocol (RTMP)
 
-> 📺 Part of the **Astronaut Labs Broadcast Suite**  
-> [@/is04](https://github.com/astronautlabs/is04) |
-> [@/rfc8331](https://github.com/astronautlabs/rfc8331) |
-> [@/rtp](https://github.com/astronautlabs/rtp) |
-> [@/scte104](https://github.com/astronautlabs/scte104) | 
-> [@/scte35](https://github.com/astronautlabs/scte35) | 
-> [@/st2010](https://github.com/astronautlabs/st2010) | 
-> [@/st291](https://github.com/astronautlabs/st291)
 
 > 📝 **Alpha Quality**  
 > This library is new, no compatibility is currently guaranteed between 
 > releases (beta, semver 0.0.x).
+
+> 📺 Part of the [**Astronaut Labs Broadcast Suite**](https://github.com/astronautlabs/broadcast)
+>
+> See also:
+> - [@/amf](https://github.com/astronautlabs/amf) - Adobe's Action Message Format (AMF)
+> - [@/flv](https://github.com/astronautlabs/flv) - Adobe's Flash Video format (FLV)
 
 ---
 
