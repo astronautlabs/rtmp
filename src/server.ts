@@ -352,7 +352,7 @@ export class ServerStream {
                 this.receiveCommand(data.commandName, data.transactionId, data.commandObject, data.parameters);
             } break;
             default:
-                console.error(`NetStream(${this.id}): Unhandled protocol message ${message.typeId}`);
+                console.error(`RTMP: NetStream(${this.id}): Unhandled protocol message ${message.typeId}`);
         }
     }
 }
@@ -567,7 +567,7 @@ export class ServerMediaStream extends ServerStream {
                         code: 'NetStream.Call.Unhandled',
                         description: `The RPC call '${commandName}' is not handled by this server.`
                     }]);
-                    console.error(`◾     ◾ | Unhandled RPC: stream.${commandName}(${parameters.map(p => JSON.stringify(p)).join(', ')}) [txn=${transactionId}]`);
+                    console.error(`${globalThis.RTMP_TRACE ? `◾     ◾ | ` : ``}Unhandled RPC: stream.${commandName}(${parameters.map(p => JSON.stringify(p)).join(', ')}) [txn=${transactionId}]`);
                 }
         }
     }
@@ -591,7 +591,8 @@ export class Session {
     }
     
     close() {
-        console.log(`Client disconnected`);
+        if (globalThis.RTMP_TRACE)
+        console.log(`RTMP: Client disconnected`);
         this.server.connections = this.server.connections.filter(x => x !== this)
         this.socket.end();
         clearInterval(this.pingInterval);
@@ -600,10 +601,12 @@ export class Session {
     chunkSession : ChunkStreamSession;
 
     private receiveMessage(message : Message) {
-        console.log(
-            `🔽     ✅ | ${message.data.inspect()} `
-            + `| msid=${message.messageStreamId}, type=${message.typeId}`
-        );
+        if (globalThis.RTMP_TRACE) {
+            console.log(
+                `RTMP: 🔽     ✅ | ${message.data.inspect()} `
+                + `| msid=${message.messageStreamId}, type=${message.typeId}`
+            );
+        }
 
         if (message.messageStreamId !== 0) {
             this.handleStreamMessage(message);
@@ -647,7 +650,7 @@ export class Session {
                 receiver.receiveCommand(data.commandName, data.transactionId, data.commandObject, data.parameters)
             } break;
             default:
-                console.error(`NetConnection: Unhandled protocol message ${message.typeId}`);
+                console.error(`RTMP: NetConnection: Unhandled protocol message ${message.typeId}`);
         }
     }
 
@@ -665,14 +668,16 @@ export class Session {
         }
         if ([ProtocolMessageType.CommandAMF0, ProtocolMessageType.CommandAMF3].includes(message.typeId)) {
             let data = message.data as (CommandAMF0Data | CommandAMF3Data);
-            console.log(`Received AMF command for stream ${message.messageStreamId} but this has not been set up yet.`);
+
+            console.error(`RTMP: Received AMF command for stream ${message.messageStreamId} but this stream does not exist yet.`);
+
             this.sendCommand0('onStatus', [{
                 level: 'error',
                 code: 'NetStream.Stream.Failed',
                 description: `There is no stream with ID ${message.messageStreamId}. Use createStream first.`
             }], { transactionId: data.transactionId });
         } else {
-            console.error(`Received protocol message ${message.typeId} for nonexistent message stream ${message.messageStreamId}`);
+            console.error(`RTMP: Received protocol message ${message.typeId} for nonexistent message stream ${message.messageStreamId}`);
         }
 
         return;
@@ -697,7 +702,7 @@ export class Session {
                 this.getStream(parameters[0])?.dispose();
                 break;
             default:
-                console.error(`◾     ◾ | Unhandled RPC: stream.${commandName}(${parameters.map(p => JSON.stringify(p)).join(', ')}) [txn=${transactionId}]`);
+                console.error(`RTMP: ${globalThis.RTMP_TRACE === true ? `◾     ◾ | ` : ``}Unhandled RPC: stream.${commandName}(${parameters.map(p => JSON.stringify(p)).join(', ')}) [txn=${transactionId}]`);
         }
     }
 
@@ -854,6 +859,6 @@ export class Server {
     async listen() {
         this._server = new net.Server(socket => this.createSession(socket));
         this._server.listen(this.port);
-        console.log(`Listening on port ${this.port}`);
+        console.log(`RTMP: Listening on port ${this.port}`);
     }
 }

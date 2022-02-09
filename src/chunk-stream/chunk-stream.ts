@@ -8,6 +8,12 @@ import { C1_RANDOM_SIZE, CONTROL_MESSAGE_STREAM_ID, MAX_TIMESTAMP, ProtocolMessa
 import { AcknowledgedWritable } from "./acknowledged-writable";
 import { AudioMessageData, VideoMessageData } from ".";
 
+function zeroPad(number : string | number, digits = 2) {
+    let str = `${number}`;
+    while (str.length < digits)
+        str = `0${str}`;
+    return str;
+}
 export interface ChunkStreamState {
     timestamp? : number;
     timestampDelta? : number;
@@ -79,20 +85,24 @@ export class ChunkStreamWriter {
 
             this.bitstream.writer.writeBytes(message.buffer);
             
-            console.log(
-                `🔼 [${message.chunkStreamId}] 🚀 | ${message.data.inspect()} `
-                + `| msid=${message.messageStreamId}, type=${message.messageTypeId}, `
-                    + `progress=${message.buffer.length}/${message.buffer.length}`
-            );
+            if (globalThis.RTMP_TRACE) {
+                console.log(
+                    `🔼 [${message.chunkStreamId}] 🚀 | ${message.data.inspect()} `
+                    + `| msid=${message.messageStreamId}, type=${message.messageTypeId}, `
+                        + `progress=${message.buffer.length}/${message.buffer.length}`
+                );
+            }
 
             return;
         } else {
             
-            console.log(
-                `🔼 [${message.chunkStreamId}] ⌚ | ${message.data.inspect()} `
-                + `| msid=${message.messageStreamId}, type=${message.messageTypeId}, `
-                    + `progress=${message.bytesSent}/${message.buffer.length}`
-            );
+            if (globalThis.RTMP_TRACE) {
+                console.log(
+                    `🔼 [${message.chunkStreamId}] ⌚ | ${message.data.inspect()} `
+                    + `| msid=${message.messageStreamId}, type=${message.messageTypeId}, `
+                        + `progress=${message.bytesSent}/${message.buffer.length}`
+                );
+            }
 
             streamQueue.push(message);
     
@@ -237,16 +247,18 @@ export class ChunkStreamWriter {
 
             let remains = message.buffer.length - message.bytesSent;
             
-            console.log(
-                `🔼 [${streamId}] ${remains <= 0 ? '✅' : '⬛'} | ${header.constructor.name.replace(/ChunkHeader/, 'Type')} ` 
-                + `| ${message.data.inspect()} `
-                + `| msid=${message.messageStreamId}, type=${message.messageTypeId}, `
-                    + `progress=${message.bytesSent}/${message.buffer.length}`
-            );
+            if (globalThis.RTMP_TRACE) {
+                console.log(
+                    `🔼 [${streamId}] ${remains <= 0 ? '✅' : '⬛'} | ${header.constructor.name.replace(/ChunkHeader/, 'Type')} ` 
+                    + `| ${message.data.inspect()} `
+                    + `| msid=${message.messageStreamId}, type=${message.messageTypeId}, `
+                        + `progress=${message.bytesSent}/${message.buffer.length}`
+                );
+            }
 
             if (remains <= 0) {
                 if (remains < 0) {
-                    console.error(`bug: remains should be positive (${remains})`);
+                    console.error(`RTMP: Bug: remains should be positive (${remains})`);
                 }
 
                 this.discardMessageFromQueue(streamId);
@@ -385,12 +397,18 @@ export class ChunkStreamReader {
     }
 
     private async handshake() {
+        if (globalThis.RTMP_TRACE === true) console.log(`RTMP: Handshake: Waiting for C0...`);
         this.clientVersion = (await Handshake0.readBlocking(this.bitstream.reader)).version;
+        
+        if (globalThis.RTMP_TRACE === true) console.log(`RTMP: Handshake: Sending S0...`);
         new Handshake0()
             .with({ version: 3 })
             .write(this.bitstream.writer);
 
+        if (globalThis.RTMP_TRACE === true) console.log(`RTMP: Handshake: Waiting for C1...`);
         let c1 = await Handshake1.readBlocking(this.bitstream.reader);
+        
+        if (globalThis.RTMP_TRACE === true) console.log(`RTMP: Handshake: Sending S1...`);
         new Handshake1()
             .with({
                 time: Math.floor(Date.now() / 1000),
@@ -399,7 +417,7 @@ export class ChunkStreamReader {
             .write(this.bitstream.writer)
         ;
 
-        let c2 = await Handshake2.readBlocking(this.bitstream.reader);
+        if (globalThis.RTMP_TRACE === true) console.log(`RTMP: Handshake: Sending S2...`);
         new Handshake2()
             .with({
                 time: c1.time,
@@ -408,6 +426,11 @@ export class ChunkStreamReader {
             })
             .write(this.bitstream.writer);
         ;
+
+        if (globalThis.RTMP_TRACE === true) console.log(`RTMP: Handshake: Waiting for C2...`);
+        let c2 = await Handshake2.readBlocking(this.bitstream.reader);
+        
+        if (globalThis.RTMP_TRACE === true) console.log(`RTMP: Handshake: Done.`);
     }
 
     private getChunkStream(id : number) {
@@ -446,6 +469,16 @@ export class ChunkStreamReader {
         }
     }
 
+    private parseMessageData(messageTypeId : number, messageData : Buffer) {
+        globalThis.BITSTREAM_TRACE = true;
+        if (messageTypeId === ProtocolMessageType.Audio)
+            return new AudioMessageData().with({ data: messageData });
+        else if (messageTypeId === ProtocolMessageType.Video)
+            return new VideoMessageData().with({ data: messageData });
+        else
+            return MessageData.deserialize(messageData, { params: [ messageTypeId ] });
+    }
+
     private async receiveChunk(header : ChunkHeader, reader : BitstreamReader) {
         let state = this.getChunkStream(header.chunkStreamId);
 
@@ -469,13 +502,7 @@ export class ChunkStreamReader {
         header.messageLength = state.messageLength;
         header.messageTypeId = state.messageTypeId;
 
-        //console.dir(header);
-
         let payloadSize = Math.min(state.messageLength - state.messagePayload.length, this.maxChunkSize);
-
-        
-        //console.log(`${header.constructor.name}[csid=${header.chunkStreamId}]: messageLength=${state.messageLength}, chunkLength=${payloadSize}/${this.maxChunkSize}`);
-
         let payload = await reader.readBytesBlocking(Buffer.alloc(payloadSize));
         state.messagePayload = Buffer.concat([state.messagePayload, payload]);
         let done = state.messagePayload.length === state.messageLength;
@@ -491,13 +518,27 @@ export class ChunkStreamReader {
         if (done) {
             let data : MessageData;
 
-            if (header.messageTypeId === ProtocolMessageType.Audio)
-                data = new AudioMessageData().with({ data: state.messagePayload });
-            else if (header.messageTypeId === ProtocolMessageType.Video)
-                data = new VideoMessageData().with({ data: state.messagePayload });
-            else
-                data = MessageData.deserialize(state.messagePayload, { params: [ header.messageTypeId ] });
-            
+            try {
+                data = this.parseMessageData(header.messageTypeId, state.messagePayload);
+            } catch (e) {
+                
+                console.error(`RTMP: Failed to parse RTMP message.`);
+                console.error(`- Header: ${JSON.stringify(header)}`);
+                console.error(`- Data:`);
+                console.error(
+                    Array.from(state.messagePayload)
+                        .map(i => zeroPad(i.toString(2), 8))
+                        .join(' ')
+                );
+                console.error(`- Bitstream Trace:`)
+                globalThis.BITSTREAM_TRACE = true;
+                try { this.parseMessageData(header.messageTypeId, state.messagePayload); } catch (e) {}
+                globalThis.BITSTREAM_TRACE = false;
+
+                throw e;
+            } finally {
+            }
+
             this.dispatchMessage(header.chunkStreamId, new Message().with({
                 messageStreamId: state.messageStreamId,
                 length: state.messageLength,
