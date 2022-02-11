@@ -3,6 +3,7 @@ import * as net from 'net';
 import { Subject } from "rxjs";
 import { DefaultVariant, Field, Variant, VariantMarker } from "@astronautlabs/bitstream";
 import { AMF3, AMF0 } from '@astronautlabs/amf';
+import { AMFMessageSerializer } from "./amf-message-serializer";
 
 export enum UserControlMessageType {
     StreamBegin = 0,
@@ -71,47 +72,48 @@ export const CommandParameterCount = {
 
 @Variant<MessageData>(i => i.typeId === ProtocolMessageType.CommandAMF0)
 export class CommandAMF0Data<T extends object = {}> extends MessageData {
-    @Field() private $commandName : AMF0.Value;
-    @Field() private $transactionId : AMF0.Value;
-    @Field() private $commandObject : AMF0.Value;
-    
-    @Field(
-        (i : CommandAMF0Data) => CommandParameterCount[i.commandName] ?? 0, {
-            array: { type: AMF0.Value }
-        }
-    )
-    private $parameters : AMF0.Value[];
+    @Field(0, { array: { type: AMF0.Value }, serializer: new AMFMessageSerializer() }) 
+    private $args : AMF0.Value[];
 
     get commandName() {
-        return this.$commandName?.value as string;
+        return this.$args?.[0]?.value as string;
     }
 
     set commandName(value) {
-        this.$commandName = AMF0.Value.string(value);
+        if (!this.$args)
+            this.$args = [];
+        
+        this.$args[0] = AMF0.Value.string(value);
     }
 
     get transactionId() {
-        return this.$transactionId?.value as number;
+        return this.$args?.[1]?.value as number;
     }
 
     set transactionId(value) {
-        this.$transactionId = AMF0.Value.number(value);
+        if (!this.$args)
+            this.$args = [];
+
+        this.$args[1] = AMF0.Value.number(value);
     }
 
     get commandObject(): T {
-        return this.$commandObject?.value as T;
+        return this.$args?.[2]?.value as T;
     }
 
     set commandObject(value : T) {
-        this.$commandObject = AMF0.Value.any(value);
+        if (!this.$args)
+            this.$args = [];
+        
+        this.$args[2] = AMF0.Value.any(value);
     }
 
     get parameters() {
-        return this.$parameters.map(x => x.value);
+        return this.$args.slice(3).map(x => x.value);
     }
 
     set parameters(value) {
-        this.$parameters = value.map(x => AMF0.Value.any(x));
+        this.$args = this.$args.slice(0, 3).concat(value.map(x => AMF0.Value.any(x)));
     }
     
     inspect() { 
@@ -157,43 +159,54 @@ export class DataAMF0Data<T extends object = {}> extends MessageData {
 
 @Variant<MessageData>(i => i.typeId === ProtocolMessageType.CommandAMF3)
 export class CommandAMF3Data<T extends object = {}> extends MessageData {
-    @Field() private $commandName : AMF3.Value;
-    @Field() private $transactionId : AMF3.Value;
-    @Field() private $commandObject : AMF3.Value;
-    
-    @Field(
-        (i : CommandAMF3Data) => CommandParameterCount[i.commandName] ?? 0, {
-            array: { type: AMF3.Value }
-        }
-    )
-    private $parameters : AMF3.Value[];
+    @Field(0, { array: { type: AMF3.Value }, serializer: new AMFMessageSerializer() }) 
+    private $args : AMF3.Value[];
 
     get commandName() {
-        return this.$commandName?.value as string;
+        return this.$args?.[0]?.value as string;
     }
 
     set commandName(value) {
-        this.$commandName = AMF3.Value.string(value);
+        if (!this.$args)
+            this.$args = [];
+        
+        this.$args[0] = AMF3.Value.string(value);
     }
 
     get transactionId() {
-        return this.$transactionId?.value as number;
+        return this.$args?.[1]?.value as number;
     }
 
     set transactionId(value) {
-        this.$transactionId = AMF3.Value.double(value);
+        if (!this.$args)
+            this.$args = [];
+
+        this.$args[1] = AMF3.Value.double(value);
     }
 
     get commandObject(): T {
-        return this.$commandObject?.value as T;
+        return this.$args?.[2]?.value as T;
     }
 
     set commandObject(value : T) {
-        this.$commandObject = AMF3.Value.object(value);
+        if (!this.$args)
+            this.$args = [];
+        
+        this.$args[2] = AMF3.Value.any(value);
     }
 
     get parameters() {
-        return this.$parameters.map(x => x.value);
+        return this.$args.slice(3).map(x => x.value);
+    }
+
+    set parameters(value) {
+        this.$args = this.$args.slice(0, 3).concat(value.map(x => AMF3.Value.any(x)));
+    }
+    
+    inspect() { 
+        return `${super.inspect()}: [${this.transactionId}] ` 
+            + `${this.commandName}(${this.parameters.map(p => JSON.stringify(p)).join(', ')})`
+        ;
     }
 }
 
@@ -357,8 +370,13 @@ export class ServerStream {
     }
 }
 
-export function RPC() {
-    return Reflect.metadata('rtmp:allowRPC', true);
+export interface RPCOptions {
+    enabled? : boolean;
+    isVoid? : boolean;
+}
+
+export function RPC(options? : RPCOptions) {
+    return Reflect.metadata('rtmp:rpc', { enabled: true, ...options });
 }
 
 export class ServerControlStream extends ServerStream {
@@ -371,32 +389,42 @@ export class ServerControlStream extends ServerStream {
     }
 }
 
+export interface Status {
+    level: 'status' | 'error';
+    code: string;
+    description: string;
+}
+
 export class ServerMediaStream extends ServerStream {
+    sendStatus(status : Status) {
+        this.session.sendCommand0('onStatus', [status]);
+    }
+
     @RPC()
     pause(paused : boolean, milliseconds : number) {
-        this.session.sendCommand0('onStatus', [{
+        this.sendStatus({
             level: 'error',
             code: 'NetStream.Pause.NotImplemented',
             description: `This operation is not implemented for this stream`
-        }]);
+        });
     }
 
     @RPC()
     seek(milliseconds : number) {
-        this.session.sendCommand0('onStatus', [{
+        this.sendStatus({
             level: 'error',
             code: 'NetStream.Seek.NotImplemented',
             description: `This operation is not implemented for this stream`
-        }]);
+        });
     }
 
     @RPC()
     publish(publishName : string, publishType : 'live' | 'record' | 'append') {
-        this.session.sendCommand0('onStatus', [{
+        this.sendStatus({
             level: 'error',
             code: 'NetStream.Publish.NotImplemented',
             description: `This operation is not implemented for this stream`
-        }]);
+        });
     }
 
     @RPC()
@@ -406,20 +434,20 @@ export class ServerMediaStream extends ServerStream {
     
     @RPC()
     play(streamName : string, start : number, duration : number, reset : boolean) {
-        this.session.sendCommand0('onStatus', [{
+        this.sendStatus({
             level: 'error',
             code: 'NetStream.Play.NotImplemented',
             description: `This operation is not implemented for this stream`
-        }]);
+        });
     }
 
     @RPC()
     play2(params : any) {
-        this.session.sendCommand0('onStatus', [{
+        this.sendStatus({
             level: 'error',
             code: 'NetStream.Play2.NotImplemented',
             description: `This operation is not implemented for this stream`
-        }]);
+        });
     }
 
     isAudioEnabled = false;
@@ -431,16 +459,16 @@ export class ServerMediaStream extends ServerStream {
     enableAudio(enabled : boolean) {
         this.isAudioEnabled = enabled;
         if (enabled) {
-            this.session.sendCommand0('onStatus', [{
+            this.sendStatus({
                 level: 'status',
                 code: 'NetStream.Seek.Notify',
                 description: `Seeking audio`
-            }]);
-            this.session.sendCommand0('onStatus', [{
+            });
+            this.sendStatus({
                 level: 'status',
                 code: 'NetStream.Play.Start',
                 description: `Playing audio`
-            }]);
+            });
         }
 
         this.audioEnabled.next(enabled);
@@ -449,16 +477,16 @@ export class ServerMediaStream extends ServerStream {
     enableVideo(enabled : boolean) {
         this.isVideoEnabled = enabled;
         if (enabled) {
-            this.session.sendCommand0('onStatus', [{
+            this.sendStatus({
                 level: 'status',
                 code: 'NetStream.Seek.Notify',
                 description: `Seeking video`
-            }]);
-            this.session.sendCommand0('onStatus', [{
+            });
+            this.sendStatus({
                 level: 'status',
                 code: 'NetStream.Play.Start',
                 description: `Playing video`
-            }]);
+            });
         }
 
         this.videoEnabled.next(enabled);
@@ -541,13 +569,20 @@ export class ServerMediaStream extends ServerStream {
                 let handled = false;
 
                 if (typeof this[commandName] === 'function') {
-                    if (Reflect.getMetadata('rtmp:allowRPC', this.constructor.prototype, commandName) === true) {
+                    let rpc = Reflect.getMetadata('rtmp:rpc', this.constructor.prototype, commandName);
+                    if (rpc?.enabled === true) {
                         try {
                             let result = await (this[commandName] as Function).apply(this, parameters);
-                            this.session.sendCommand0('_result', [ result ], { 
-                                transactionId
-                            });
+
+                            if (!rpc?.isVoid) {
+                                this.session.sendCommand0('_result', [ result ], { 
+                                    transactionId
+                                });
+                            }
                         } catch (e) {
+                            if (rpc?.isVoid)
+                                throw e;
+                            
                             this.session.sendCommand0('_error', [{
                                 level: 'error',
                                 code: 'NetStream.Call.Error',
@@ -689,6 +724,8 @@ export class Session {
     }
 
     async receiveCommand(commandName: string, transactionId: number, commandObject: any, parameters: any[]) {
+        parameters ??= [];
+        
         switch (commandName) {
             case 'connect':
                 this.onConnect(commandObject, parameters[0]);

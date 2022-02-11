@@ -1,23 +1,31 @@
 import { BitstreamElement, Field, Variant, VariantMarker } from "@astronautlabs/bitstream";
 import { C1_RANDOM_SIZE, ProtocolMessageType } from "./constants";
+import * as FLV from '@astronautlabs/flv';
 
 export class MessageData extends BitstreamElement {
-    constructor(public typeId? : number) {
+    constructor(public typeId? : number, private bytesAvailable : number = 0) {
         super();
     }
 
     inspect() {
         return this.constructor.name.replace(/Data$/, '');
     }
+
+    @VariantMarker() $variant;
+
+    @Field((i : MessageData) => i.bytesAvailable*8 - i.measureTo(i => i.$variant)) data : Uint8Array;
 }
 
+@Variant((i : MessageData) => i.typeId === ProtocolMessageType.Video)
 export class VideoMessageData extends MessageData {
-    data : Uint8Array;
+    @Field() tag : FLV.VideoTag;
 }
 
+@Variant((i : MessageData) => i.typeId === ProtocolMessageType.Audio)
 export class AudioMessageData extends MessageData {
-    data : Uint8Array;
+    @Field() tag : FLV.AudioTag;
 }
+
 export abstract class ChunkStreamId extends BitstreamElement {
     /**
      * This field identifies one of four format used by the ’chunk message header’. 

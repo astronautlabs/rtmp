@@ -470,13 +470,12 @@ export class ChunkStreamReader {
     }
 
     private parseMessageData(messageTypeId : number, messageData : Buffer) {
-        globalThis.BITSTREAM_TRACE = true;
         if (messageTypeId === ProtocolMessageType.Audio)
             return new AudioMessageData().with({ data: messageData });
         else if (messageTypeId === ProtocolMessageType.Video)
             return new VideoMessageData().with({ data: messageData });
         else
-            return MessageData.deserialize(messageData, { params: [ messageTypeId ] });
+            return MessageData.deserialize(messageData, { params: [ messageTypeId, messageData.length ] });
     }
 
     private async receiveChunk(header : ChunkHeader, reader : BitstreamReader) {
@@ -522,21 +521,30 @@ export class ChunkStreamReader {
                 data = this.parseMessageData(header.messageTypeId, state.messagePayload);
             } catch (e) {
                 
-                console.error(`RTMP: Failed to parse RTMP message.`);
-                console.error(`- Header: ${JSON.stringify(header)}`);
+                console.error(`RTMP: Failed to parse RTMP message: ${e.message}`);
+                console.error(`- Header: ${JSON.stringify(header, undefined, 2)}`);
+                console.log();
                 console.error(`- Data:`);
                 console.error(
                     Array.from(state.messagePayload)
                         .map(i => zeroPad(i.toString(2), 8))
                         .join(' ')
                 );
+                console.log();
+
                 console.error(`- Bitstream Trace:`)
+                console.log();
+
                 globalThis.BITSTREAM_TRACE = true;
                 try { this.parseMessageData(header.messageTypeId, state.messagePayload); } catch (e) {}
                 globalThis.BITSTREAM_TRACE = false;
 
+                console.log();
+                console.error(`- Exception:`);
+                console.error(e);
+                console.log();
+
                 throw e;
-            } finally {
             }
 
             this.dispatchMessage(header.chunkStreamId, new Message().with({
