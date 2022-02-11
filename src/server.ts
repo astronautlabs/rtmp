@@ -492,20 +492,20 @@ export class ServerMediaStream extends ServerStream {
         this.videoEnabled.next(enabled);
     }
 
-    sendVideo(timestamp : number, data : Uint8Array) {
+    sendVideo(timestamp : number, message : VideoMessageData) {
         if (!this.isVideoEnabled)
             return;
         this.session.chunkSession.send({
-            messageTypeId: ProtocolMessageType.Audio,
+            messageTypeId: ProtocolMessageType.Video,
             messageStreamId: this.id,
-            chunkStreamId: ChunkStreams.Audio,
+            chunkStreamId: ChunkStreams.Video,
             timestamp,
-            buffer: Buffer.from(data),
+            buffer: Buffer.from(message.serialize()),
             data: null
         });
     }
 
-    sendAudio(timestamp : number, data : Uint8Array) {
+    sendAudio(timestamp : number, message : AudioMessageData) {
         if (!this.isAudioEnabled)
             return;
         this.session.chunkSession.send({
@@ -513,7 +513,7 @@ export class ServerMediaStream extends ServerStream {
             messageStreamId: this.id,
             chunkStreamId: ChunkStreams.Audio,
             timestamp,
-            buffer: Buffer.from(data),
+            buffer: Buffer.from(message.serialize()),
             data: null
         });
     }
@@ -531,21 +531,21 @@ export class ServerMediaStream extends ServerStream {
         return false;
     }
 
-    receiveAudio(timestamp : number, data : Uint8Array) {
+    receiveAudio(timestamp : number, message : AudioMessageData) {
 
     }
 
-    receiveVideo(timestamp : number, data : Uint8Array) {
+    receiveVideo(timestamp : number, message : VideoMessageData) {
 
     }
 
     receiveMessage(message: Message): void {
         switch (message.typeId) {
             case ProtocolMessageType.Audio:
-                this.receiveAudio(message.timestamp, (message.data as AudioMessageData).data);
+                this.receiveAudio(message.timestamp, message.data as AudioMessageData);
                 break;
             case ProtocolMessageType.Video:
-                this.receiveVideo(message.timestamp, (message.data as VideoMessageData).data);
+                this.receiveVideo(message.timestamp, message.data as VideoMessageData);
                 break;
             default:
                 super.receiveMessage(message);
