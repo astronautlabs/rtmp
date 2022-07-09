@@ -1,8 +1,8 @@
 import { AMF0, AMF3 } from "@astronautlabs/amf";
-import { BitstreamElement, BitstreamReader, BitstreamWriter, FieldDefinition, Serializer } from "@astronautlabs/bitstream";
+import { BitstreamElement, BitstreamReader, BitstreamWriter, FieldDefinition, IncompleteReadResult, Serializer } from "@astronautlabs/bitstream";
 
 export class AMFMessageSerializer implements Serializer {
-    *read(reader: BitstreamReader, type: any, parent: BitstreamElement, field: FieldDefinition): Generator<number, any, unknown> {
+    *read(reader: BitstreamReader, type: any, parent: BitstreamElement, field: FieldDefinition): Generator<IncompleteReadResult, any, unknown> {
         let amfType : typeof AMF0.Value = <typeof AMF0.Value>field?.options?.array?.type ?? AMF0.Value;
         let values : (AMF0.Value | AMF3.Value)[] = [];
 

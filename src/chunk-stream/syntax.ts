@@ -13,7 +13,9 @@ export class MessageData extends BitstreamElement {
 
     @VariantMarker() $variant;
 
-    @Field((i : MessageData) => i.bytesAvailable*8 - i.measureTo(i => i.$variant)) data : Uint8Array;
+    // use bitsRead instead of i.measureTo(i => i.$variant) because there are multiple valid ways to encode 
+    // the same AMF data due to packing.
+    @Field((i : MessageData) => i.bytesAvailable*8 - i.bitsRead) data : Uint8Array;
 }
 
 @Variant((i : MessageData) => i.typeId === ProtocolMessageType.Video)
