@@ -400,6 +400,28 @@ export class ServerMediaStream extends ServerStream {
         this.session.sendCommand0('onStatus', [status], { messageStreamId: this.id });
     }
 
+    begin() {
+        this.session.streamBegin(this.id);
+        this.sendStatus({
+            level: 'status',
+            code: 'NetStream.Play.Reset',
+            description: `The stream is resetting`
+        });
+        this.sendStatus({
+            level: 'status',
+            code: 'NetStream.Play.Start',
+            description: `The stream is starting`
+        });
+    }
+
+    end() {
+        this.session.streamEnd(this.id);
+    }
+
+    dry() {
+        this.session.streamDry(this.id);
+    }
+
     @RPC()
     pause(paused : boolean, milliseconds : number) {
         this.sendStatus({

@@ -57,8 +57,8 @@ class MyStream extends RTMP.ServerMediaStream {
     play(streamName: string, start: number, duration: number, reset: boolean): void {
         // Client wants to receive this stream.
 
-        this.streamBegin();
-    
+        this.begin();
+
         this.sendVideo(Buffer.from([ ... ]));
         this.sendAudio(Buffer.from([ ... ]));
     }
