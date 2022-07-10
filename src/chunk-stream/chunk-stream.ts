@@ -469,13 +469,8 @@ export class ChunkStreamReader {
         }
     }
 
-    private parseMessageData(messageTypeId : number, messageData : Buffer) {
-        if (messageTypeId === ProtocolMessageType.Audio)
-            return new AudioMessageData().with({ data: messageData });
-        else if (messageTypeId === ProtocolMessageType.Video)
-            return new VideoMessageData().with({ data: messageData });
-        else
-            return MessageData.deserialize(messageData, { params: [ messageTypeId, messageData.length ] });
+    private parseMessageData(header : ChunkHeader, messageData : Buffer) {
+        return MessageData.deserialize(messageData, { params: [ header, messageData.length ] });
     }
 
     private async receiveChunk(header : ChunkHeader, reader : BitstreamReader) {
@@ -518,7 +513,7 @@ export class ChunkStreamReader {
             let data : MessageData;
 
             try {
-                data = this.parseMessageData(header.messageTypeId, state.messagePayload);
+                data = this.parseMessageData(header, state.messagePayload);
             } catch (e) {
                 
                 console.error(`RTMP: Failed to parse RTMP message: ${e.message}`);
@@ -536,7 +531,7 @@ export class ChunkStreamReader {
                 console.log();
 
                 globalThis.BITSTREAM_TRACE = true;
-                try { this.parseMessageData(header.messageTypeId, state.messagePayload); } catch (e) {}
+                try { this.parseMessageData(header, state.messagePayload); } catch (e) {}
                 globalThis.BITSTREAM_TRACE = false;
 
                 console.log();

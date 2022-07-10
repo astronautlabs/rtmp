@@ -70,7 +70,7 @@ export const CommandParameterCount = {
     pause: 2
   };
 
-@Variant<MessageData>(i => i.typeId === ProtocolMessageType.CommandAMF0)
+@Variant<MessageData>(i => i.header.messageTypeId === ProtocolMessageType.CommandAMF0)
 export class CommandAMF0Data<T extends object = {}> extends MessageData {
     @Field(0, { array: { type: AMF0.Value }, serializer: new AMFMessageSerializer() }) 
     private $args : AMF0.Value[];
@@ -123,7 +123,7 @@ export class CommandAMF0Data<T extends object = {}> extends MessageData {
     }
 }
 
-@Variant<MessageData>(i => i.typeId === ProtocolMessageType.DataAMF3)
+@Variant<MessageData>(i => i.header.messageTypeId === ProtocolMessageType.DataAMF3)
 export class DataAMF3Data<T extends object = {}> extends MessageData {
     @Field() private $value : AMF3.Value;
     
@@ -140,7 +140,7 @@ export class DataAMF3Data<T extends object = {}> extends MessageData {
     }
 }
 
-@Variant<MessageData>(i => i.typeId === ProtocolMessageType.DataAMF0)
+@Variant<MessageData>(i => i.header.messageTypeId === ProtocolMessageType.DataAMF0)
 export class DataAMF0Data<T extends object = {}> extends MessageData {
     @Field() private $value : AMF0.Value;
     
@@ -157,7 +157,7 @@ export class DataAMF0Data<T extends object = {}> extends MessageData {
     }
 }
 
-@Variant<MessageData>(i => i.typeId === ProtocolMessageType.CommandAMF3)
+@Variant<MessageData>(i => i.header.messageTypeId === ProtocolMessageType.CommandAMF3)
 export class CommandAMF3Data<T extends object = {}> extends MessageData {
     @Field(0, { array: { type: AMF3.Value }, serializer: new AMFMessageSerializer() }) 
     private $args : AMF3.Value[];
@@ -272,7 +272,7 @@ export class UnknownMessageData extends MessageData {
     $marker;
 }
 
-@Variant<MessageData>(i => i.typeId === ProtocolMessageType.UserControl)
+@Variant<MessageData>(i => i.header.messageTypeId === ProtocolMessageType.UserControl)
 export class UserControlData extends MessageData {
     @Field(8*2) eventType : number;
 }

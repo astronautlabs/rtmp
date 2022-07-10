@@ -3,7 +3,7 @@ import { C1_RANDOM_SIZE, ProtocolMessageType } from "./constants";
 import * as FLV from '@astronautlabs/flv';
 
 export class MessageData extends BitstreamElement {
-    constructor(public typeId? : number, private bytesAvailable : number = 0) {
+    constructor(public header? : ChunkHeader, private bytesAvailable : number = 0) {
         super();
     }
 
@@ -18,14 +18,36 @@ export class MessageData extends BitstreamElement {
     @Field((i : MessageData) => i.bytesAvailable*8 - i.bitsRead) data : Uint8Array = new Uint8Array(0);
 }
 
-@Variant((i : MessageData) => i.typeId === ProtocolMessageType.Video)
+@Variant((i : MessageData) => i.header.messageTypeId === ProtocolMessageType.Video)
 export class VideoMessageData extends MessageData {
-    @Field() tag : FLV.VideoTag;
+    @Field(0, {
+        // When we carry FLV data in RTMP, we skip the tag headers that you'd normally see in an FLV body.
+        // Instead we synthesize those values from the RTMP chunk stream headers.
+        initializer: (tag: FLV.VideoTag, data: VideoMessageData ) => tag.header = new FLV.TagHeader().with({
+            type: data.header.messageTypeId, // always ProtocolMessageType.Video AKA FLV.TagType.Video
+            dataSize: data.header.messageLength,
+            timestamp: data.header.basicTimestamp,
+            timestampExtended: data.header.extendedTimestamp,
+            streamId: data.header.messageStreamId
+        })
+    })
+    tag : FLV.VideoTag;
 }
 
-@Variant((i : MessageData) => i.typeId === ProtocolMessageType.Audio)
+@Variant((i : MessageData) => i.header.messageTypeId === ProtocolMessageType.Audio)
 export class AudioMessageData extends MessageData {
-    @Field() tag : FLV.AudioTag;
+    @Field(0, {
+        // When we carry FLV data in RTMP, we skip the tag headers that you'd normally see in an FLV body.
+        // Instead we synthesize those values from the RTMP chunk stream headers.
+        initializer: (tag: FLV.AudioTag, data: AudioMessageData ) => tag.header = new FLV.TagHeader().with({
+            type: data.header.messageTypeId, // always ProtocolMessageType.Audio AKA FLV.TagType.Audio
+            dataSize: data.header.messageLength,
+            timestamp: data.header.basicTimestamp,
+            timestampExtended: data.header.extendedTimestamp,
+            streamId: data.header.messageStreamId
+        })
+    })
+    tag : FLV.AudioTag;
 }
 
 export abstract class ChunkStreamId extends BitstreamElement {
@@ -227,7 +249,7 @@ export class Handshake2 extends BitstreamElement {
     @Field(8*C1_RANDOM_SIZE) randomEcho : Buffer;
 }
 
-@Variant<MessageData>(i => i.typeId === ProtocolMessageType.SetChunkSize)
+@Variant<MessageData>(i => i.header.messageTypeId === ProtocolMessageType.SetChunkSize)
 export class SetChunkSizeData extends MessageData {
     typeId = ProtocolMessageType.SetChunkSize;
 
@@ -235,24 +257,24 @@ export class SetChunkSizeData extends MessageData {
     @Field(31) chunkSize : number;
 }
 
-@Variant<MessageData>(i => i.typeId === ProtocolMessageType.AbortMessage)
+@Variant<MessageData>(i => i.header.messageTypeId === ProtocolMessageType.AbortMessage)
 export class AbortMessageData extends MessageData {
     @Field(32) chunkStreamId : number;
 }
 
-@Variant<MessageData>(i => i.typeId === ProtocolMessageType.Acknowledgement)
+@Variant<MessageData>(i => i.header.messageTypeId === ProtocolMessageType.Acknowledgement)
 export class AcknowledgementData extends MessageData {
     @Field(8*4) sequenceNumber : number;
 
     inspect() { return `${super.inspect()}[seq=${this.sequenceNumber}]`; }
 }
 
-@Variant<MessageData>(i => i.typeId === ProtocolMessageType.WindowAcknowledgementSize)
+@Variant<MessageData>(i => i.header.messageTypeId === ProtocolMessageType.WindowAcknowledgementSize)
 export class WindowAcknowledgementSizeData extends MessageData {
     @Field(8*4) acknowledgementWindowSize : number;
 }
 
-@Variant<MessageData>(i => i.typeId === ProtocolMessageType.SetPeerBandwidth)
+@Variant<MessageData>(i => i.header.messageTypeId === ProtocolMessageType.SetPeerBandwidth)
 export class SetPeerBandwidthData extends MessageData {
     @Field(8*4) acknowledgementWindowSize : number;
     @Field(8*1) limitType : number;
@@ -263,6 +285,5 @@ export class Message extends BitstreamElement {
     readonly length : number;
     readonly timestamp : number;
     readonly messageStreamId : number;
-
-    @Field() data : MessageData;
+    readonly data : MessageData;
 }
