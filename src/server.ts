@@ -397,7 +397,7 @@ export interface Status {
 
 export class ServerMediaStream extends ServerStream {
     sendStatus(status : Status) {
-        this.session.sendCommand0('onStatus', [status]);
+        this.session.sendCommand0('onStatus', [status], { messageStreamId: this.id });
     }
 
     @RPC()
@@ -838,7 +838,7 @@ export class Session {
         this.userControl(new StreamDryEventData().with({ streamID }));
     }
 
-    sendCommand0(commandName : string, parameters : any[], options : { transactionId? : number, commandObject? : any } = {}) {
+    sendCommand0(commandName : string, parameters : any[], options : { messageStreamId?: number, transactionId? : number, commandObject? : any } = {}) {
         let transactionId = options.transactionId ?? 0;
         let commandObject = options.commandObject ?? null;
         let data = new CommandAMF0Data().with({ 
@@ -850,7 +850,7 @@ export class Session {
         
         this.chunkSession.send({
             chunkStreamId: ChunkStreams.Invoke,
-            messageStreamId: CONTROL_MESSAGE_STREAM_ID,
+            messageStreamId: options?.messageStreamId ?? CONTROL_MESSAGE_STREAM_ID,
             messageTypeId: ProtocolMessageType.CommandAMF0,
             timestamp: 0,
             data
