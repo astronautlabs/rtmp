@@ -26,8 +26,8 @@ export class VideoMessageData extends MessageData {
         initializer: (tag: FLV.VideoTag, data: VideoMessageData ) => tag.header = new FLV.TagHeader().with({
             type: data.header.messageTypeId, // always ProtocolMessageType.Video AKA FLV.TagType.Video
             dataSize: data.header.messageLength,
-            timestamp: data.header.basicTimestamp,
-            timestampExtended: data.header.extendedTimestamp,
+            timestamp: data.header.timestamp & 0xFFFFFF,
+            timestampExtended: data.header.timestamp >> 24,
             streamId: data.header.messageStreamId
         })
     })
