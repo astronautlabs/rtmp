@@ -1,8 +1,7 @@
-import { BitstreamReader, BitstreamWriter } from "@astronautlabs/bitstream";
-import { AcknowledgedWritable } from "../chunk-stream/acknowledged-writable";
+import { BitstreamReader, BitstreamWriter, Writable } from "@astronautlabs/bitstream";
 
 export interface Bitstream {
     reader : BitstreamReader;
-    writable : AcknowledgedWritable;
+    writable : Writable;
     writer : BitstreamWriter;
 }

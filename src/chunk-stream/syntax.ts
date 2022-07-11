@@ -15,39 +15,8 @@ export class MessageData extends BitstreamElement {
 
     // use bitsRead instead of i.measureTo(i => i.$variant) because there are multiple valid ways to encode 
     // the same AMF data due to packing.
-    @Field((i : MessageData) => i.bytesAvailable*8 - i.bitsRead) data : Uint8Array = new Uint8Array(0);
-}
-
-@Variant((i : MessageData) => i.header.messageTypeId === ProtocolMessageType.Video)
-export class VideoMessageData extends MessageData {
-    @Field(0, {
-        // When we carry FLV data in RTMP, we skip the tag headers that you'd normally see in an FLV body.
-        // Instead we synthesize those values from the RTMP chunk stream headers.
-        initializer: (tag: FLV.VideoTag, data: VideoMessageData ) => tag.header = new FLV.TagHeader().with({
-            type: data.header.messageTypeId, // always ProtocolMessageType.Video AKA FLV.TagType.Video
-            dataSize: data.header.messageLength,
-            timestamp: data.header.timestamp & 0xFFFFFF,
-            timestampExtended: data.header.timestamp >> 24,
-            streamId: data.header.messageStreamId
-        })
-    })
-    tag : FLV.VideoTag;
-}
-
-@Variant((i : MessageData) => i.header.messageTypeId === ProtocolMessageType.Audio)
-export class AudioMessageData extends MessageData {
-    @Field(0, {
-        // When we carry FLV data in RTMP, we skip the tag headers that you'd normally see in an FLV body.
-        // Instead we synthesize those values from the RTMP chunk stream headers.
-        initializer: (tag: FLV.AudioTag, data: AudioMessageData ) => tag.header = new FLV.TagHeader().with({
-            type: data.header.messageTypeId, // always ProtocolMessageType.Audio AKA FLV.TagType.Audio
-            dataSize: data.header.messageLength,
-            timestamp: data.header.basicTimestamp,
-            timestampExtended: data.header.extendedTimestamp,
-            streamId: data.header.messageStreamId
-        })
-    })
-    tag : FLV.AudioTag;
+    @Field((i : MessageData) => i.bytesAvailable*8 - i.bitsRead, { buffer: { truncate: false }}) 
+    data : Uint8Array = new Uint8Array(0);
 }
 
 export abstract class ChunkStreamId extends BitstreamElement {
@@ -281,9 +250,10 @@ export class SetPeerBandwidthData extends MessageData {
 }
 
 export class Message extends BitstreamElement {
-    readonly typeId : number;
-    readonly length : number;
-    readonly timestamp : number;
-    readonly messageStreamId : number;
-    readonly data : MessageData;
+    readonly typeId: number;
+    readonly length: number;
+    readonly timestamp: number;
+    readonly messageStreamId: number;
+    readonly data: MessageData;
+    readonly rawData: Buffer;
 }

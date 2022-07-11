@@ -31,9 +31,9 @@
   "author": "Astronaut Labs, LLC",
   "license": "MIT",
   "dependencies": {
-    "@astronautlabs/amf": "^0.0.4",
-    "@astronautlabs/bitstream": "4.1",
-    "@astronautlabs/flv": "^0.0.11",
+    "@astronautlabs/amf": "^0.0.6",
+    "@astronautlabs/bitstream": "^4.1.1",
+    "@astronautlabs/flv": "^0.0.15",
     "rxjs": "^7.5.2",
     "typescript": "^4.7.4"
   },

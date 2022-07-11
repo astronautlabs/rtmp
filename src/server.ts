@@ -1,9 +1,42 @@
-import { AudioMessageData, ChunkStreamSession, CONTROL_MESSAGE_STREAM_ID, Message, MessageData, ProtocolMessageType, PROTOCOL_CHUNK_STREAM_ID, VideoMessageData } from "./chunk-stream";
+import { ChunkStreamSession, CONTROL_MESSAGE_STREAM_ID, Message, MessageData, ProtocolMessageType, PROTOCOL_CHUNK_STREAM_ID } from "./chunk-stream";
 import * as net from 'net';
 import { Subject } from "rxjs";
 import { DefaultVariant, Field, Variant, VariantMarker } from "@astronautlabs/bitstream";
 import { AMF3, AMF0 } from '@astronautlabs/amf';
+import * as FLV from '@astronautlabs/flv';
 import { AMFMessageSerializer } from "./amf-message-serializer";
+
+@Variant((i : MessageData) => i.header.messageTypeId === ProtocolMessageType.Video)
+export class VideoMessageData extends MessageData {
+    @Field(0, {
+        // When we carry FLV data in RTMP, we skip the tag headers that you'd normally see in an FLV body.
+        // Instead we synthesize those values from the RTMP chunk stream headers.
+        initializer: (tag: FLV.VideoTag, data: VideoMessageData ) => tag.header = new FLV.TagHeader().with({
+            type: data.header.messageTypeId, // always ProtocolMessageType.Video AKA FLV.TagType.Video
+            dataSize: data.header.messageLength,
+            timestamp: data.header.timestamp & 0xFFFFFF,
+            timestampExtended: data.header.timestamp >> 24,
+            streamId: data.header.messageStreamId
+        })
+    })
+    tag : FLV.VideoTag;
+}
+
+@Variant((i : MessageData) => i.header.messageTypeId === ProtocolMessageType.Audio)
+export class AudioMessageData extends MessageData {
+    @Field(0, {
+        // When we carry FLV data in RTMP, we skip the tag headers that you'd normally see in an FLV body.
+        // Instead we synthesize those values from the RTMP chunk stream headers.
+        initializer: (tag: FLV.AudioTag, data: AudioMessageData ) => tag.header = new FLV.TagHeader().with({
+            type: data.header.messageTypeId, // always ProtocolMessageType.Audio AKA FLV.TagType.Audio
+            dataSize: data.header.messageLength,
+            timestamp: data.header.basicTimestamp,
+            timestampExtended: data.header.extendedTimestamp,
+            streamId: data.header.messageStreamId
+        })
+    })
+    tag : FLV.AudioTag;
+}
 
 export enum UserControlMessageType {
     StreamBegin = 0,
@@ -124,26 +157,65 @@ export class CommandAMF0Data<T extends object = {}> extends MessageData {
 }
 
 @Variant<MessageData>(i => i.header.messageTypeId === ProtocolMessageType.DataAMF3)
-export class DataAMF3Data<T extends object = {}> extends MessageData {
-    @Field() private $value : AMF3.Value;
+export class DataAMF3Data extends MessageData {
+    @Field() private $name : AMF3.StringValue;
     
-    get value() {
-        return this.$value?.value;
+    get name() {
+        return this.$name?.value;
     }
 
-    set value(value) {
-        this.$value = AMF3.Value.any(value);
+    set name(value) {
+        this.$name = AMF3.Value.string(value);
     }
 
     inspect(): string {
-        return `${super.inspect()}: ${JSON.stringify(this.value)}`;
+        return `${super.inspect()}: ${this.name}`;
     }
 }
 
 @Variant<MessageData>(i => i.header.messageTypeId === ProtocolMessageType.DataAMF0)
-export class DataAMF0Data<T extends object = {}> extends MessageData {
-    @Field() private $value : AMF0.Value;
+export class DataAMF0Data extends MessageData {
+    @Field() private $name : AMF0.StringValue;
     
+    get name() {
+        return this.$name?.value;
+    }
+
+    set name(value) {
+        this.$name = <AMF0.StringValue>AMF0.Value.string(value);
+    }
+    
+    inspect(): string {
+        return `${super.inspect()}: ${this.name}`;
+    }
+}
+
+export interface OnMetaData {
+    audiosamplerate: number;
+    stereo: boolean;
+    width: number;
+    height: number;
+    framerate: number;
+}
+
+@Variant<DataAMF0Data>(i => i.name === '@setDataFrame')
+export class SetDataFrameData extends DataAMF0Data {
+    constructor(...args) {
+        super(...args);
+        this.name = '@setDataFrame';
+    }
+
+    @Field() private $key: AMF0.StringValue;
+    @Field() private $value : AMF0.Value;
+
+    get key() {
+        return this.$key?.value;
+    }
+
+    set key(value) {
+        this.$key = <AMF0.StringValue>AMF0.Value.string(value);
+    }
+
     get value() {
         return this.$value?.value;
     }
@@ -151,9 +223,50 @@ export class DataAMF0Data<T extends object = {}> extends MessageData {
     set value(value) {
         this.$value = AMF0.Value.any(value);
     }
+}
 
-    inspect(): string {
-        return `${super.inspect()}: ${JSON.stringify(this.value)}`;
+@Variant<DataAMF0Data>(i => i.name === '@clearDataFrame')
+export class ClearDataFrameData extends DataAMF0Data {
+    constructor(...args) {
+        super(...args);
+        this.name = '@clearDataFrame';
+    }
+
+    @Field() private $metadata : AMF0.ObjectValue;
+
+    get metadata() {
+        return this.$metadata?.value;
+    }
+
+    set metadata(value) {
+        this.$metadata = AMF0.Value.object(value);
+    }
+}
+
+@Variant<DataAMF0Data>(i => i.name === '|RtmpSampleAccess')
+export class RtmpSampleAccessData extends DataAMF0Data {
+    constructor(...args) {
+        super(...args);
+        this.name = '|RtmpSampleAccess';
+    }
+
+    @Field() private $audioRestricted : AMF0.BooleanValue;
+    @Field() private $videoRestricted : AMF0.BooleanValue;
+
+    get audioRestricted() {
+        return this.$audioRestricted.value;
+    }
+
+    set audioRestricted(value) {
+        this.$audioRestricted = AMF0.Value.boolean(value);
+    }
+
+    get videoRestricted() {
+        return this.$videoRestricted.value;
+    }
+
+    set videoRestricted(value) {
+        this.$videoRestricted = AMF0.Value.boolean(value);
     }
 }
 
@@ -325,7 +438,7 @@ export class ServerStream {
 
     destroyed = new Subject<void>();
     messageReceived = new Subject<Message>();
-    dataReceived = new Subject<any>();
+    dataReceived = new Subject<DataAMF0Data | DataAMF3Data>();
 
     notifyBegin() {
         this.session.streamBegin(this.id);
@@ -343,7 +456,7 @@ export class ServerStream {
         this.destroyed.next();
     }
 
-    receiveData(data : any) {
+    receiveData(data : DataAMF0Data | DataAMF3Data) {
         this.dataReceived.next(data);
     }
 
@@ -357,7 +470,7 @@ export class ServerStream {
             case ProtocolMessageType.DataAMF0:
             case ProtocolMessageType.DataAMF3: {
                 let data = <DataAMF3Data | DataAMF0Data> message.data;
-                this.dataReceived.next(data.value);
+                this.receiveData(data);
             } break;
             case ProtocolMessageType.CommandAMF0:
             case ProtocolMessageType.CommandAMF3: {
@@ -400,8 +513,8 @@ export class ServerMediaStream extends ServerStream {
         this.session.sendCommand0('onStatus', [status], { messageStreamId: this.id });
     }
 
-    begin() {
-        this.session.streamBegin(this.id);
+    notifyBegin() {
+        super.notifyBegin();
         this.sendStatus({
             level: 'status',
             code: 'NetStream.Play.Reset',
@@ -414,12 +527,44 @@ export class ServerMediaStream extends ServerStream {
         });
     }
 
-    end() {
-        this.session.streamEnd(this.id);
+    metadata: Record<string, any> = {};
+    metadataChanged = new Subject<Record<string, any>>();
+    sampleAccessRestrictionsChanged = new Subject<{ audioRestricted: boolean, videoRestricted: boolean }>();
+
+    receiveMetadata(key: string, value: any) {
     }
 
-    dry() {
-        this.session.streamDry(this.id);
+    receiveSampleRestrictions(restrictions: { audioRestricted: boolean, videoRestricted: boolean }) {
+        this.sampleAccessRestrictionsChanged.next(restrictions);
+    }
+
+    sendDataFrame(key: string, value: any) {
+        this.session.sendData0(new SetDataFrameData().with({ key, value }), { messageStreamId: this.id });
+    }
+
+    override receiveData(data : DataAMF0Data | DataAMF3Data) {
+        if (data instanceof SetDataFrameData) {
+            this.metadata[data.key] = data.value;
+            this.metadataChanged.next(this.metadata);
+            this.receiveMetadata(data.key, data.value);
+        }
+
+        if (data instanceof ClearDataFrameData) {
+            // TODO
+            //this.onDataFrameRemoved(data.metadata);
+        }
+
+        if (data instanceof RtmpSampleAccessData)
+            this.receiveSampleRestrictions({ audioRestricted: data.audioRestricted, videoRestricted: data.videoRestricted });
+
+        super.receiveData(data);
+    }
+
+    restrictSampleAccess(audioRestricted: boolean, videoRestricted: boolean) {
+        this.session.sendData0(
+            new RtmpSampleAccessData().with({ audioRestricted: audioRestricted, videoRestricted: videoRestricted }),
+            { messageStreamId: this.id }
+        )
     }
 
     @RPC()
@@ -441,7 +586,7 @@ export class ServerMediaStream extends ServerStream {
     }
 
     @RPC()
-    publish(publishName : string, publishType : 'live' | 'record' | 'append') {
+    publish(streamKey : string, publishType : 'live' | 'record' | 'append') {
         this.sendStatus({
             level: 'error',
             code: 'NetStream.Publish.NotImplemented',
@@ -454,8 +599,8 @@ export class ServerMediaStream extends ServerStream {
         return streamName;
     }
     
-    @RPC()
-    play(streamName : string, start : number, duration : number, reset : boolean) {
+    @RPC({ isVoid: true })
+    play(streamKey : string, start : number, duration : number, reset : boolean) {
         this.sendStatus({
             level: 'error',
             code: 'NetStream.Play.NotImplemented',
@@ -472,8 +617,8 @@ export class ServerMediaStream extends ServerStream {
         });
     }
 
-    isAudioEnabled = false;
-    isVideoEnabled = false;
+    isAudioEnabled = true;
+    isVideoEnabled = true;
 
     audioEnabled = new Subject<boolean>();
     videoEnabled = new Subject<boolean>();
@@ -514,7 +659,14 @@ export class ServerMediaStream extends ServerStream {
         this.videoEnabled.next(enabled);
     }
 
-    sendVideo(timestamp : number, message : VideoMessageData) {
+    /**
+     * Send a video message. Can provide either a VideoMessageData object or an already serialized 
+     * VideoMessageData object.
+     * @param timestamp 
+     * @param message 
+     * @returns 
+     */
+    sendVideo(timestamp : number, message : VideoMessageData | Buffer) {
         if (!this.isVideoEnabled)
             return;
         this.session.chunkSession.send({
@@ -522,12 +674,19 @@ export class ServerMediaStream extends ServerStream {
             messageStreamId: this.id,
             chunkStreamId: ChunkStreams.Video,
             timestamp,
-            buffer: Buffer.from(message.serialize()),
-            data: null
+            buffer: message instanceof MessageData ? undefined : message,
+            data: message instanceof MessageData ? message : undefined,
         });
     }
 
-    sendAudio(timestamp : number, message : AudioMessageData) {
+    /**
+     * Send an audio message. Can provide either an AudioMessageData object or an already serialized
+     * AudioMessageData object.
+     * @param timestamp 
+     * @param message 
+     * @returns 
+     */
+    sendAudio(timestamp : number, message : AudioMessageData | Buffer) {
         if (!this.isAudioEnabled)
             return;
         this.session.chunkSession.send({
@@ -535,8 +694,8 @@ export class ServerMediaStream extends ServerStream {
             messageStreamId: this.id,
             chunkStreamId: ChunkStreams.Audio,
             timestamp,
-            buffer: Buffer.from(message.serialize()),
-            data: null
+            buffer: message instanceof MessageData ? undefined : message,
+            data: message instanceof MessageData ? message : undefined
         });
     }
 
@@ -553,25 +712,41 @@ export class ServerMediaStream extends ServerStream {
         return false;
     }
 
-    receiveAudio(timestamp : number, message : AudioMessageData) {
+    /**
+     * Receive an audio message on this stream.
+     * @param timestamp The timestamp of the audio message
+     * @param message The decoded message
+     * @param buffer The serialized message for efficient passthrough to other streams
+     */
+    receiveAudio(timestamp : number, message : AudioMessageData, buffer: Buffer) {
 
     }
 
-    receiveVideo(timestamp : number, message : VideoMessageData) {
+    /**
+     * Receive a video message on this stream.
+     * @param timestamp The timestamp of the video message
+     * @param message The decoded message
+     * @param buffer The serialized message for efficient passthrough to other streams
+     */
+    receiveVideo(timestamp : number, message : VideoMessageData, buffer: Buffer) {
 
     }
 
     receiveMessage(message: Message): void {
         switch (message.typeId) {
             case ProtocolMessageType.Audio:
-                this.receiveAudio(message.timestamp, message.data as AudioMessageData);
+                this.receiveAudio(message.timestamp, message.data as AudioMessageData, message.rawData);
                 break;
             case ProtocolMessageType.Video:
-                this.receiveVideo(message.timestamp, message.data as VideoMessageData);
+                this.receiveVideo(message.timestamp, message.data as VideoMessageData, message.rawData);
                 break;
             default:
                 super.receiveMessage(message);
         }
+    }
+
+    sendCommand0(commandName: string, parameters: any[], options : { transactionId? : number, commandObject? : any } = {}) {
+        this.session.sendCommand0(commandName, parameters, { ...options, messageStreamId: this.id });
     }
 
     async receiveCommand(commandName : string, transactionId : number, commandObject : any, parameters : any[]) {
@@ -579,12 +754,15 @@ export class ServerMediaStream extends ServerStream {
             case 'deleteStream':
                 // note that spec says this is on NetStream not NetConnection, but the stream ID being deleted is 
                 // passed as a parameter. Supporting both is prudent in anticipation of this confusion.
+                //   https://rtmp.veriskope.com/docs/spec/#7223deletestream
                 this.dispose();
                 break;
             case 'receiveAudio':
+                console.log(`[ServerMediaStream] receiveAudio: ${parameters[0]}`);
                 this.enableAudio(parameters[0]);
                 break;
             case 'receiveVideo':
+                console.log(`[ServerMediaStream] receiveVideo: ${parameters[0]}`);
                 this.enableVideo(parameters[0]);
                 break;
             default:
@@ -597,7 +775,7 @@ export class ServerMediaStream extends ServerStream {
                             let result = await (this[commandName] as Function).apply(this, parameters);
 
                             if (!rpc?.isVoid) {
-                                this.session.sendCommand0('_result', [ result ], { 
+                                this.sendCommand0('_result', [ result ], { 
                                     transactionId
                                 });
                             }
@@ -605,11 +783,15 @@ export class ServerMediaStream extends ServerStream {
                             if (rpc?.isVoid)
                                 throw e;
                             
-                            this.session.sendCommand0('_error', [{
+                            this.sendCommand0('_error', [{
                                 level: 'error',
                                 code: 'NetStream.Call.Error',
                                 description: `${commandName}(): ${e.message}`
                             }]);
+
+                            console.log(`Unhandled error during stream.${commandName}(). The error has been transmitted to the client.`);
+                            console.log(`Error was:`);
+                            console.error(e);
                         }
                         handled = true;
                     }
@@ -619,7 +801,7 @@ export class ServerMediaStream extends ServerStream {
                     handled = this.call(commandName, commandObject, parameters[0]);
                 
                 if (!handled) {
-                    this.session.sendCommand0('_error', [{
+                    this.sendCommand0('_error', [{
                         level: 'error',
                         code: 'NetStream.Call.Unhandled',
                         description: `The RPC call '${commandName}' is not handled by this server.`
@@ -649,7 +831,13 @@ export class Session {
     
     close() {
         if (globalThis.RTMP_TRACE)
-        console.log(`RTMP: Client disconnected`);
+            console.log(`RTMP: Client disconnected`);
+        
+        for (let [, stream] of this._streams) {
+            stream.dispose();
+        }
+
+        this._streams.clear();
         this.server.connections = this.server.connections.filter(x => x !== this)
         this.socket.end();
         clearInterval(this.pingInterval);
@@ -696,7 +884,7 @@ export class Session {
             case ProtocolMessageType.DataAMF3: {
                 let receiver = message.messageStreamId === 0 ? this : this.getStream(message.messageStreamId);
                 let data = <DataAMF3Data | DataAMF0Data> message.data;
-                receiver.receiveData(data.value);
+                receiver.receiveData(data);
             } break;
             case ProtocolMessageType.CommandAMF0:
             case ProtocolMessageType.CommandAMF3: {
@@ -745,6 +933,19 @@ export class Session {
         this.dataReceived.next(data);
     }
 
+    /**
+     * Handle a custom RPC call. Return true if it was handled, otherwise an error result is sent to the 
+     * client and an error is printed to the logs.
+     * 
+     * @param commandName 
+     * @param command 
+     * @param args 
+     * @returns 
+     */
+    call(commandName : string, command : any, args : Record<string, any>) {
+        return false;
+    }
+
     async receiveCommand(commandName: string, transactionId: number, commandObject: any, parameters: any[]) {
         parameters ??= [];
         
@@ -761,7 +962,48 @@ export class Session {
                 this.getStream(parameters[0])?.dispose();
                 break;
             default:
-                console.error(`RTMP: ${globalThis.RTMP_TRACE === true ? `◾     ◾ | ` : ``}Unhandled RPC: stream.${commandName}(${parameters.map(p => JSON.stringify(p)).join(', ')}) [txn=${transactionId}]`);
+                let handled = false;
+                let functionExists = typeof this[commandName] === 'function';
+
+                if (functionExists) {
+                    let rpc = Reflect.getMetadata('rtmp:rpc', this.constructor.prototype, commandName);
+                    if (rpc?.enabled === true) {
+                        try {
+                            let result = await (this[commandName] as Function).apply(this, parameters);
+
+                            if (!rpc?.isVoid) {
+                                this.sendCommand0('_result', [ result ], { 
+                                    transactionId
+                                });
+                            }
+                        } catch (e) {
+                            if (rpc?.isVoid)
+                                throw e;
+                            
+                            this.sendCommand0('_error', [{
+                                level: 'error',
+                                code: 'NetStream.Call.Error',
+                                description: `${commandName}(): ${e.message}`
+                            }]);
+                        }
+                        handled = true;
+                    }
+                }
+
+                if (!handled)
+                    handled = this.call(commandName, commandObject, parameters[0]);
+                
+                if (!handled) {
+                    this.sendCommand0('_error', [{
+                        level: 'error',
+                        code: 'NetStream.Call.Unhandled',
+                        description: `The RPC call '${commandName}' is not handled by this server.`
+                    }]);
+                    console.error(`${globalThis.RTMP_TRACE ? `◾     ◾ | ` : ``}Unhandled RPC: session.${commandName}(${parameters.map(p => JSON.stringify(p)).join(', ')}) [txn=${transactionId}]`);
+                    if (functionExists) {
+                        console.error(`${globalThis.RTMP_TRACE ? `◾     ◾ | ` : ``}A method named session.${commandName}() exists but is not marked as @RPC()`);
+                    }
+                }
         }
     }
 
@@ -803,14 +1045,17 @@ export class Session {
         this.pingInterval = setInterval(() => this.ping(), this.pingTime);
     }
 
+    clientConnectInfo: ConnectCommandObject;
+
     private onConnect(command : ConnectCommandObject, args : Record<string, any>) {
+        this.clientConnectInfo = command;
         this.startPingTimer();
         this.chunkSession.setAcknowledgementWindow(this.server.preferredWindowSize);
         this.chunkSession.setPeerBandwidth(this.server.preferredWindowSize, 'dynamic');
         this.chunkSession.setChunkSize(this.server.preferredChunkSize);
 
         let controlStream = new ServerControlStream(this);
-        controlStream.notifyBegin();
+        //controlStream.notifyBegin(); // Is this actually needed?
         this._streams.set(0, controlStream);
 
         this.sendCommand0('_result', [{
@@ -879,6 +1124,16 @@ export class Session {
         });
     }
 
+    sendData0(data: DataAMF0Data, options : { messageStreamId?: number } = {}) {
+        this.chunkSession.send({
+            chunkStreamId: ChunkStreams.Invoke,
+            messageStreamId: options?.messageStreamId ?? CONTROL_MESSAGE_STREAM_ID,
+            messageTypeId: ProtocolMessageType.DataAMF0,
+            timestamp: 0,
+            data
+        });
+    }
+
     sendCommand3(commandName : string, parameters : any[], options : { transactionId? : number, commandObject? : any } = {}) {
         let transactionId = options.transactionId ?? 0;
         let commandObject = options.commandObject ?? null;
@@ -908,7 +1163,7 @@ export class Server {
     private _server : net.Server;
     public connections : Session[] = [];
     preferredWindowSize = 5000000;
-    preferredChunkSize = 128;
+    preferredChunkSize = 60000;
     preferredPingTime = 60000;
 
     protected createSession(socket : net.Socket) {
