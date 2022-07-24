@@ -1175,4 +1175,8 @@ export class Server {
         this._server.listen(this.port);
         console.log(`RTMP: Listening on port ${this.port}`);
     }
+
+    stop() {
+        this._server.close();
+    }
 }
