@@ -33,7 +33,7 @@
   "dependencies": {
     "@astronautlabs/amf": "^0.0.6",
     "@astronautlabs/bitstream": "^4.1.1",
-    "@astronautlabs/flv": "^0.0.16",
+    "@astronautlabs/flv": "^0.0.17",
     "rxjs": "^7.5.2",
     "typescript": "^4.7.4"
   },
