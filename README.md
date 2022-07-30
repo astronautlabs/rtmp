@@ -3,10 +3,8 @@
 > **[📜 Adobe RTMP (December 21, 2012)](https://rtmp.veriskope.com/docs/spec/)**  
 > Adobe’s Real Time Messaging Protocol (RTMP)
 
-
-> 📝 **Alpha Quality**  
-> This library is new, no compatibility is currently guaranteed between 
-> releases (beta, semver 0.0.x).
+> ✅ **Stable**  
+> This library is a mostly-complete and working implementation of RTMP. (stable, semver 1.x.x).
 
 > 📺 Part of the [**Astronaut Labs Broadcast Suite**](https://github.com/astronautlabs/broadcast)
 >
