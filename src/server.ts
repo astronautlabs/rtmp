@@ -483,7 +483,13 @@ export class ServerStream {
 }
 
 export interface RPCOptions {
+    /**
+     * Whether this RPC call is enabled or not. Defaults to true.
+     */
     enabled? : boolean;
+    /**
+     * Whether a _result should be sent for this RPC call. Default is true.
+     */
     isVoid? : boolean;
 }
 
@@ -593,9 +599,61 @@ export class ServerMediaStream extends ServerStream {
         });
     }
 
+    /**
+     * Prepare the server for receiving a media stream, if necessary.
+     * The default implementation does nothing.
+     * @param streamName
+     * @returns 
+     */
     @RPC()
-    private FCPublish(streamName : string) {
+    protected FCPublish(streamName : string) {
         return streamName;
+    }
+
+    /**
+     * Prepare the server for no longer receiving a media stream, if necessary.
+     * The default implementation does nothing.
+     * @param streamName
+     */
+    @RPC()
+    protected FCUnpublish(streamName: string) {
+
+    }
+
+    /**
+     * Subscribe the server to a specific upstream media stream, if necessary.
+     * Traditionally this is used to tell an edge server to start pulling a stream from the 
+     * appropriate origin. That logic is specific to a particular RTMP server implementation,
+     * so by default this method does nothing.
+     * @param streamName 
+     * @param mediaCasterType 
+     */
+    @RPC()
+    protected FCSubscribe(streamName: string, mediaCasterType?: string) {
+
+    }
+
+    /**
+     * Unsubscribe the server from a specific upstream media stream, if necessary.
+     * The implementation should properly handle multiple subscribed streams in deciding
+     * how to handle this operation, since this call is specific only to a single client.
+     * Since this logic is specific to a particular RTMP server implementation,
+     * by default this method does nothing.
+     * @param streamName 
+     */
+    @RPC()
+    protected FCUnsubscribe(streamName: string) {
+
+    }
+
+    /**
+     * A variant method name of FCUnsubscribe. The default implementation calls FCUnsubscribe(). 
+     * You should implement FCUnsubscribe() instead if you require this functionality.
+     * @param streamName 
+     */
+    @RPC()
+    protected FCUnSubscribe(streamName: string) {
+        return this.FCUnsubscribe(streamName);
     }
     
     @RPC({ isVoid: true })
