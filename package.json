@@ -1,6 +1,6 @@
 {
   "name": "@astronautlabs/rtmp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Real Time Messaging Protocol (RTMP)",
   "main": "dist/index.js",
   "module": "dist.esm/index.js",
